@@ -34,6 +34,7 @@ public sealed class BridgeHost : IDisposable
             Root = fs.Root,
             Home = fs.Home,
             Token = token,
+            AppVersion = BuildInfo.Version,
             CreatedUtc = DateTime.UtcNow.ToString("o"),
             AllowSymlinks = fs.AllowSymlinks,
         };

@@ -151,6 +151,9 @@ def main():
         check("health lists only read operations",
               health is not None and all(op in health.get("operations", [])
                                          for op in ("health", "list", "stat", "read", "find")), health)
+        check("health uses the version embedded in the session object",
+              health is not None and bool(info.get("appVersion"))
+              and health.get("version") == info.get("appVersion"), health)
 
         status, text, _ = text_call(bridge, "health")
         check("health text is available for humans",

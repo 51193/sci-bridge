@@ -18,7 +18,11 @@
 
     <AssemblyName>SciBridge</AssemblyName>
     <RootNamespace>SciBridge.App</RootNamespace>
-    <Version>1.0.0</Version>
+    <!--
+      Local/dev placeholder only. Release builds override this with the git tag:
+      dotnet publish ... -p:Version="<tag without v>"
+    -->
+    <Version>0.0.0-dev</Version>
     <Product>SciBridge 只读科研数据桥</Product>
     <AssemblyTitle>SciBridge 只读科研数据桥</AssemblyTitle>
     <Company>SciBridge</Company>

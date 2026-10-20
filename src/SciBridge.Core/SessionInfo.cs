@@ -23,6 +23,8 @@ public sealed class SessionInfo
     public string Home { get; set; } = "";
     public string Url { get; set; } = "";
     public string Token { get; set; } = "";
+    /// <summary>Version of the running SciBridge build (embedded from the release tag).</summary>
+    public string AppVersion { get; set; } = BuildInfo.Version;
     public string CreatedUtc { get; set; } = "";
     public bool AllowSymlinks { get; set; }
 

@@ -43,7 +43,7 @@ GET .../find?path=.<&glob=*.nc&max=200&depth=3>
 ```json
 {
   "service": "scibridge",
-  "version": "1.0.0",
+  "version": "1.2.3",
   "host": "...",
   "port": 22,
   "user": "...",

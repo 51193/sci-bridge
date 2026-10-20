@@ -18,6 +18,7 @@ internal sealed class MainForm : Form
     private readonly Button _copyButton = new();
     private readonly Button _folderButton = new();
     private readonly Label _statusLabel = new();
+    private readonly Label _versionLabel = new();
     private readonly TextBox _handoffBox = new();
 
     private BridgeHost? _bridge;
@@ -46,7 +47,7 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 5,
+            RowCount = 6,
             Padding = new Padding(14),
         };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -54,6 +55,7 @@ internal sealed class MainForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         // ---- title
         var title = new Label
@@ -164,12 +166,22 @@ internal sealed class MainForm : Form
                            "Codex 不需要执行本程序。";
         root.Controls.Add(_handoffBox, 0, 4);
 
+        // ---- version (embedded from the release tag at build time)
+        _versionLabel.AutoSize = true;
+        _versionLabel.Anchor = AnchorStyles.Right;
+        _versionLabel.TextAlign = ContentAlignment.MiddleRight;
+        _versionLabel.ForeColor = SystemColors.GrayText;
+        _versionLabel.Margin = new Padding(2, 6, 2, 0);
+        _versionLabel.Text = BuildInfo.DisplayVersion;
+        root.Controls.Add(_versionLabel, 0, 5);
+
         Controls.Add(root);
         AcceptButton = _connectButton;
 
         var tips = new ToolTip();
         tips.SetToolTip(_rootBox, "例如 . 或 data/2024。Codex 无法访问这个目录之外的内容。");
         tips.SetToolTip(_symlinkBox, "符号链接可能指向可读根目录之外。默认不跟随更安全。");
+        tips.SetToolTip(_versionLabel, "版本来自构建时的 release tag；本地非发布构建显示 0.0.0-dev。");
     }
 
     private static void AddRow(TableLayoutPanel table, string label, Control control, string tooltip)

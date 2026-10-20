@@ -1,11 +1,5 @@
 namespace SciBridge;
 
-public static class BuildInfo
-{
-    public const string Version = "1.0.0";
-    public const string ServiceName = "scibridge";
-}
-
 /// <summary>A transport-independent request for one read-only operation.</summary>
 public sealed record BridgeRequest(
     string Op,
@@ -89,7 +83,7 @@ public sealed class BridgeService
 
         return new HealthDto
         {
-            Version = BuildInfo.Version,
+            Version = _session.AppVersion,
             Host = _session.Host,
             Port = _session.Port,
             User = _session.User,

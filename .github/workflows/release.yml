@@ -59,6 +59,8 @@ jobs:
 
       - name: Publish SciBridge.exe
         run: |
+          # The git tag is the only version authority. Do not add a version
+          # literal to C#; the project's 0.0.0-dev value is only a local fallback.
           dotnet publish src/SciBridge.App/SciBridge.App.csproj \
             -c Release \
             -p:Version="$VERSION" \

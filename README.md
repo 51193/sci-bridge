@@ -85,7 +85,7 @@ tools/testserver/          交付给用户的“本机测试服务器”（Go，
 tests/
 ├─ sftp_server.py           基于 paramiko 的真实 SSH/SFTP 服务端（只读、记录所有请求）
 ├─ bridge_client.py         测试共享的 HTTP 客户端/Bridge 进程辅助
-├─ e2e.py                   54 项端到端断言（真实 SSH 服务端 + 真实 HTTP 接口）
+├─ e2e.py                   55 项端到端断言（真实 SSH 服务端 + 真实 HTTP 接口）
 ├─ go_server_check.py       20 项断言：验证 Go 测试服务器是合格的替身
 ├─ wine_check.py            8 项：用 Wine 验证交付的 Windows exe（自检/HTTP 路径）
 └─ wine_selftest.py         14 项断言：Windows 测试服务器 + Windows SciBridge 全链路
@@ -135,6 +135,21 @@ dotnet publish src/SciBridge.App/SciBridge.App.csproj -c Release
 # 产物：src/SciBridge.App/bin/Release/net10.0-windows/win-x64/publish/SciBridge.exe
 ```
 
+本地构建没有 release tag 时会显示 `0.0.0-dev`。要模拟某个发布版本：
+
+```bash
+dotnet publish src/SciBridge.App/SciBridge.App.csproj -c Release -p:Version=1.0.0
+```
+
+### 版本号
+
+- **唯一的发布版本权威源是 Release workflow 的 git tag**（例如 `v1.2.3` → `1.2.3`）；
+  workflow 通过 `-p:Version="$VERSION"` 注入，程序集把它内嵌为
+  `AssemblyInformationalVersion`。
+- C# 代码里没有版本常量；`BuildInfo` 从程序集元数据读取版本，并写入内部
+  `SessionInfo.AppVersion` / `health` 返回值。
+- GUI 右下角显示这个版本。非 tag 的本地构建显示 `0.0.0-dev`，不会被误认为发布版。
+
 `env.sh` 只是把 `NUGET_PACKAGES` 等指向仓库内部；在普通机器上可以不用。
 
 ## 发布
@@ -154,7 +169,7 @@ dotnet publish src/SciBridge.App/SciBridge.App.csproj -c Release
 ```bash
 python3 -m venv .venv && .venv/bin/pip install paramiko pyyaml
 
-.venv/bin/python tests/e2e.py             # 54 项：真实 SSH 服务端 + 真实 HTTP
+.venv/bin/python tests/e2e.py             # 55 项：真实 SSH 服务端 + 真实 HTTP
 .venv/bin/python tests/go_server_check.py # 20 项：Go 测试服务器是否合格
 .venv/bin/python tests/wine_check.py      # 8 项：交付的 Windows exe（自检/HTTP 路径）
 .venv/bin/python tests/wine_selftest.py   # 14 项：Windows 测试服务器 + Windows 自检
