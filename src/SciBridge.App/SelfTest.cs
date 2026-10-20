@@ -55,12 +55,12 @@ internal static class SelfTest
             Console.WriteLine($"桥已启动：{bridge.Session.Url}（仅本机）");
             Console.WriteLine();
 
-            using var client = BridgeClient.Create(bridge.SessionPath);
+            using var client = new BridgeClient(bridge.Session);
 
-            // 1) health
+            // 1) health (it performs a real LSTAT of the access root)
             var health = client.Call(new BridgeRequest("health")) as HealthDto;
             Check("health 返回服务信息",
-                health is { ReadOnly: true } && health.Operations.Count >= 4,
+                health is { ReadOnly: true, RootReachable: true } && health.Operations.Count >= 4,
                 health is null ? "没有返回" : $"root={health.Root} home={health.Home}");
 
             // 2) root listing

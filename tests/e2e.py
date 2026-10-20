@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 """
-End-to-end tests for SciBridge.
+End-to-end tests for SciBridge's HTTP-only agent interface.
 
 These run the real Core library (via SciBridge.TestHost) against a real
-password-authenticated SSH/SFTP server, so the SSH handshake, host-key trust,
-path confinement, read-only guarantees and both transports are all exercised
-for real rather than mocked.
-
-Run:  <venv-python> tests/e2e.py
+password-authenticated SSH/SFTP server, then exercise the same loopback HTTP
+endpoint an agent uses. No CLI, no session file, no named pipe.
 """
-import hashlib
+import base64
 import json
 import os
 import pathlib
@@ -17,7 +14,6 @@ import shutil
 import subprocess
 import sys
 import time
-import urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -26,9 +22,9 @@ WORK = ROOT / ".testtmp"
 
 sys.path.insert(0, str(HERE))
 from sftp_server import create_listener  # noqa: E402
-
-USER = "researcher"
-PASSWORD = "correct-horse-battery-staple"
+from bridge_client import (  # noqa: E402
+    Bridge, json_call, raw_get, read_all, request, text_call, USER, PASSWORD,
+)
 
 PASSED, FAILED = [], []
 
@@ -43,12 +39,6 @@ def check(name, ok, detail=""):
             for line in str(detail).splitlines()[:12]:
                 print(f"        {line}")
 
-
-def sha256(data):
-    return hashlib.sha256(data).hexdigest()
-
-
-# --------------------------------------------------------------------- fixture
 
 def build_fixture(base):
     root = base / "root"
@@ -80,80 +70,10 @@ def build_fixture(base):
 
     (outside / "secret.txt").write_text("OUTSIDE-SECRET", encoding="utf-8")
 
-    # A symlink that leaves the access root: the main escape this tool must refuse.
     os.symlink(str(outside), str(root / "link_out"))
-    # A symlink that stays inside: still refused by default, used to prove the opt-in.
     os.symlink(str(data), str(root / "link_in"))
-
     return root, outside, big
 
-
-# ------------------------------------------------------------------- processes
-
-class Bridge:
-    def __init__(self, port, session, known_hosts, allow_symlinks=False, user=USER, password=PASSWORD,
-                 exe_path="C:\\Users\\lab\\Downloads\\SciBridge.exe"):
-        self.session = session
-        cmd = [
-            "dotnet", str(TESTHOST_DLL), "serve",
-            "--host", "127.0.0.1", "--port", str(port),
-            "--user", user, "--password", password,
-            "--root", ".",
-            "--session", str(session), "--known-hosts", str(known_hosts),
-            "--exe-path", exe_path,
-        ]
-        if allow_symlinks:
-            cmd.append("--allow-symlinks")
-        self.proc = subprocess.Popen(
-            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        self.handoff = ""
-        self.ready = False
-        self.startup_error = ""
-        deadline = time.time() + 60
-        in_handoff = False
-        while time.time() < deadline:
-            line = self.proc.stdout.readline()
-            if not line:
-                break
-            if line.startswith("READY "):
-                self.ready = True
-            elif line.startswith("----- HANDOFF -----"):
-                in_handoff = True
-            elif line.startswith("----- END -----"):
-                break
-            elif in_handoff:
-                self.handoff += line
-        if not self.ready:
-            self.startup_error = self.proc.stderr.read()
-
-    def stop(self):
-        try:
-            self.proc.stdin.close()
-        except Exception:
-            pass
-        try:
-            self.proc.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
-
-
-def cli(session, *args, timeout=180):
-    cmd = ["dotnet", str(TESTHOST_DLL), args[0], *args[1:], "--session", str(session)]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    return proc.returncode, proc.stdout, proc.stderr
-
-
-def http_get(url, headers=None):
-    request = urllib.request.Request(url, headers=headers or {})
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    try:
-        with opener.open(request, timeout=30) as response:
-            return response.status, response.read()
-    except urllib.error.HTTPError as error:
-        return error.code, error.read()
-
-
-# ------------------------------------------------------------------------ main
 
 def main():
     if not TESTHOST_DLL.exists():
@@ -163,39 +83,45 @@ def main():
     if WORK.exists():
         shutil.rmtree(WORK)
     WORK.mkdir(parents=True)
-    root, outside, big = build_fixture(WORK)
+    root, _outside, big = build_fixture(WORK)
 
     ops_log = WORK / "ops.jsonl"
-    port, fingerprint, stop_server = create_listener(
+    port, _fingerprint, stop_server = create_listener(
         str(root), USER, PASSWORD, log_path=str(ops_log))
 
-    print(f"\n=== SciBridge end-to-end (ssh server on 127.0.0.1:{port}) ===\n")
+    print(f"\n=== SciBridge HTTP end-to-end (ssh server on 127.0.0.1:{port}) ===\n")
 
-    session = WORK / "session.json"
     known = WORK / "known_hosts.json"
-    mirror = WORK / "mirror"
-    bridge = Bridge(port, session, known)
+    bridge = Bridge(port, known)
     symlink_bridge = None
     try:
         check("bridge starts and authenticates", bridge.ready, bridge.startup_error)
         if not bridge.ready:
             return 1
 
-        info = json.loads(session.read_text(encoding="utf-8"))
+        info = bridge.info
 
-        # ---------------------------------------------------------- security
-        check("session file never contains the SSH password",
-              PASSWORD not in session.read_text(encoding="utf-8"))
-        check("handoff text never contains the session token",
-              info["token"] not in bridge.handoff, bridge.handoff[:400])
-        check("handoff text names the executable path",
-              "SciBridge.exe" in bridge.handoff and "health" in bridge.handoff, bridge.handoff[:400])
+        # ---------------------------------------------------------- handoff
+        check("READY never contains the SSH password", PASSWORD not in json.dumps(info))
+        check("handoff carries the loopback URL and token",
+              info["url"] in bridge.handoff and info["token"] in bridge.handoff,
+              bridge.handoff[:500])
+        check("handoff asks the agent to request local-network permission",
+              "允许本机网络访问" in bridge.handoff or "本机回环网络" in bridge.handoff,
+              bridge.handoff[:500])
+        check("handoff gives copy-pasteable curl.exe commands",
+              "curl.exe" in bridge.handoff and "--noproxy" in bridge.handoff
+              and "--fail-with-body" in bridge.handoff, bridge.handoff[:500])
+        check("handoff no longer points at an executable or a session file",
+              "SciBridge.exe" not in bridge.handoff and "session.json" not in bridge.handoff,
+              bridge.handoff[:500])
+        check("handoff no longer mentions the named pipe", "管道" not in bridge.handoff)
+        check("session descriptor no longer exposes a pipe or an executable path",
+              "pipe" not in info and "exePath" not in info, info)
         check("host key was pinned after first use",
               json.loads(known.read_text(encoding="utf-8"))["hosts"] != {})
 
         # ------------------------------------------------- auth attempt budget
-        # Institutional accounts commonly lock after a few failures, so the tool
-        # must never turn one wrong password into a burst of attempts.
         def auth_events():
             rows = [json.loads(l) for l in ops_log.read_text(encoding="utf-8").splitlines() if l.strip()]
             return [r for r in rows if r["op"].startswith("auth_")]
@@ -205,8 +131,7 @@ def main():
             ["dotnet", str(TESTHOST_DLL), "serve",
              "--host", "127.0.0.1", "--port", str(port),
              "--user", USER, "--password", "definitely-not-the-password",
-             "--root", ".", "--session", str(WORK / "session_bad.json"),
-             "--known-hosts", str(known)],
+             "--root", ".", "--known-hosts", str(known)],
             capture_output=True, text=True, timeout=180)
         attempts = len(auth_events()) - before_auth
 
@@ -216,82 +141,106 @@ def main():
               attempts == 1, f"{attempts} attempts reached the server")
 
         # ------------------------------------------------------------ health
-        code, out, err = cli(session, "health")
-        check("health succeeds", code == 0, err)
-        check("health reports read-only", "readOnly: true" in out, out)
+        status, health, body = json_call(bridge, "health")
+        check("health succeeds", status == 200, body[:300])
+        check("health reports read-only and a reachable root",
+              health is not None and health.get("readOnly") is True
+              and health.get("rootReachable") is True, health)
+        check("health reports the HTTP transport",
+              health is not None and health.get("transport") == "http-loopback", health)
         check("health lists only read operations",
-              all(op in out for op in ("health", "list", "stat", "read", "find")), out)
+              health is not None and all(op in health.get("operations", [])
+                                         for op in ("health", "list", "stat", "read", "find")), health)
+
+        status, text, _ = text_call(bridge, "health")
+        check("health text is available for humans",
+              status == 200 and "readOnly: true" in text and "rootReachable: true" in text, text[:300])
 
         # ------------------------------------------------------------ listing
-        code, out, err = cli(session, "ls", ".")
-        check("ls root succeeds", code == 0, err)
-        check("ls root shows directories with trailing slash",
-              "data/" in out and "README.txt" in out, out)
+        status, listing, body = json_call(bridge, "list", path=".")
+        names = {e["name"]: e for e in (listing or {}).get("entries", [])}
+        check("list root succeeds", status == 200 and "README.txt" in names, body[:300])
+        check("list reports directories and files with types",
+              names.get("data", {}).get("type") == "dir"
+              and names.get("README.txt", {}).get("type") == "file", names)
 
-        code, out, err = cli(session, "ls", "data")
-        check("ls subdirectory succeeds", code == 0 and "sample.txt" in out, out or err)
+        status, text, _ = text_call(bridge, "list", path=".")
+        check("text listing uses ls -F style markers",
+              status == 200 and "data/" in text and "README.txt" in text, text[:300])
 
-        code, out, err = cli(session, "ls", "many", "--max", "10")
-        check("ls honours --max", code == 0 and "已截断" in out, out)
+        status, sub, body = json_call(bridge, "list", path="data")
+        check("list subdirectory succeeds",
+              status == 200 and any(e["name"] == "sample.txt" for e in sub["entries"]), body[:300])
+
+        status, many, body = json_call(bridge, "list", path="many", max=10)
+        check("list honours max and reports truncation",
+              status == 200 and many["count"] == 10 and many["truncated"] is True, many)
 
         # -------------------------------------------------------------- reads
-        code, out, err = cli(session, "cat", "README.txt")
-        check("cat text file is byte-faithful",
-              code == 0 and out == "科研数据说明 first line\nsecond line\n", repr(out))
+        status, text, _ = text_call(bridge, "read", path="README.txt")
+        check("text read is byte-faithful",
+              status == 200 and text == "科研数据说明 first line\nsecond line\n", repr(text))
 
-        code, out, err = cli(session, "cat", "data/empty.txt")
-        check("cat empty file returns nothing", code == 0 and out == "", repr(out))
+        status, text, _ = text_call(bridge, "read", path="data/empty.txt")
+        check("empty file reads as empty", status == 200 and text == "", repr(text))
 
-        out_file = WORK / "big_copy.bin"
-        code, out, err = cli(session, "cat", "data/big.bin", "--out", str(out_file))
-        check("cat --out preserves every byte of a 300 KB binary",
-              code == 0 and out_file.exists() and sha256(out_file.read_bytes()) == sha256(big),
-              err or out)
+        raw, size = read_all(bridge, "data/big.bin")
+        check("raw read preserves every byte of a 300 KB binary",
+              size == len(big) and raw == big, f"{len(raw)} bytes, size={size}")
 
-        code, out, err = cli(session, "cat", "data/big.bin", "--offset", "200", "--length", "1000", "--b64")
-        sliced = b""
-        if code == 0:
-            import base64
-            sliced = base64.b64decode(out.strip())
+        status, sliced, headers = request(
+            bridge, "read", path="data/big.bin", offset=200, length=1000)
         check("offset/length read returns the exact slice",
-              code == 0 and sliced == big[200:1200], f"{len(sliced)} bytes")
+              status == 200 and sliced == big[200:1200], f"{len(sliced)} bytes")
+        check("raw read exposes offset/size/eof headers",
+              headers.get("X-SciBridge-Offset") == "200"
+              and headers.get("X-SciBridge-Size") == str(len(big))
+              and headers.get("X-SciBridge-Eof") == "false", headers)
 
-        code, out, err = cli(session, "stat", "data/big.bin")
-        check("stat reports the real size", code == 0 and "300000" in out, out or err)
+        status, read_json, body = json_call(
+            bridge, "read", path="data/big.bin", offset=200, length=1000)
+        decoded = base64.b64decode(read_json["data"]) if read_json else b""
+        check("JSON read returns base64 and metadata",
+              status == 200 and decoded == big[200:1200]
+              and read_json["encoding"] == "base64" and read_json["size"] == len(big), read_json)
 
-        code, out, err = cli(session, "stat", "link_in")
+        status, stat, body = json_call(bridge, "stat", path="data/big.bin")
+        check("stat reports the real size",
+              status == 200 and stat["entry"]["size"] == len(big), body[:300])
+
+        status, stat, body = json_call(bridge, "stat", path="link_in")
         check("stat identifies a symlink without following it",
-              code == 0 and out.startswith("l") and "@" in out, out or err)
+              status == 200 and stat["entry"]["type"] == "link" and stat["entry"]["symlink"] is True,
+              body[:300])
 
-        code, out, err = cli(session, "cat", "data")
-        check("cat on a directory is refused with guidance",
-              code != 0 and "目录" in err, err)
+        status, text, body = text_call(bridge, "read", path="data")
+        check("reading a directory is refused with guidance",
+              status == 400 and "目录" in text, text[:300])
 
         # ----------------------------------------------------------- unicode
-        code, out, err = cli(session, "ls", "数据")
-        check("unicode directory lists correctly", code == 0 and "观测记录.txt" in out, out or err)
+        status, listing, body = json_call(bridge, "list", path="数据")
+        check("unicode directory lists correctly",
+              status == 200 and any(e["name"] == "观测记录.txt" for e in listing["entries"]),
+              body[:300])
 
-        code, out, err = cli(session, "cat", "数据/观测记录.txt")
-        check("unicode path reads correctly", code == 0 and "温度 21.5" in out, repr(out))
+        status, text, _ = text_call(bridge, "read", path="数据/观测记录.txt")
+        check("unicode path reads correctly", status == 200 and "温度 21.5" in text, repr(text))
 
         # ---------------------------------------------------------- searching
-        code, out, err = cli(session, "find", ".", "--glob", "*.txt", "--max", "100")
+        status, found, body = json_call(bridge, "find", path=".", glob="*.txt", max=100)
         check("find locates a file five levels deep using the default depth",
-              code == 0 and "data/deep/a/b/c/leaf.txt" in out, out or err)
+              status == 200 and any(e["name"] == "data/deep/a/b/c/leaf.txt"
+                                    for e in found["entries"]), body[:300])
 
-        code, out, err = cli(session, "find", ".", "--glob", "*.txt", "--max", "100", "--depth", "1")
-        check("find --depth 1 stays shallow",
-              code == 0 and "data/deep/a/b/c/leaf.txt" not in out, out or err)
+        status, found, body = json_call(
+            bridge, "find", path=".", glob="*.txt", max=100, depth=1)
+        check("find depth=1 stays shallow",
+              status == 200 and not any(e["name"] == "data/deep/a/b/c/leaf.txt"
+                                        for e in found["entries"]), body[:300])
 
-        code, out, err = cli(session, "cat", "data/big.bin", "--max-bytes", "1000", "--b64")
-        import base64 as _b64
-        limited = _b64.b64decode(out.strip()) if code == 0 else b""
-        check("cat --max-bytes caps the read and warns on stderr",
-              code == 0 and limited == big[:1000] and "只读取了" in err, f"{len(limited)} {err[:120]}")
-
-        code, out, err = cli(session, "find", ".", "--glob", "*.txt", "--max", "3", "--depth", "4")
-        check("find honours --max and reports truncation",
-              code == 0 and "已截断" in out, out)
+        status, found, body = json_call(bridge, "find", path=".", glob="*.txt", max=3, depth=4)
+        check("find honours max and reports truncation",
+              status == 200 and found["count"] == 3 and found["truncated"] is True, found)
 
         # ------------------------------------------------------- confinement
         for label, path in [
@@ -300,48 +249,38 @@ def main():
             ("traversal to a known file", "../../outside/secret.txt"),
             ("backslash traversal", "..\\..\\outside"),
         ]:
-            code, out, err = cli(session, "ls", path)
-            check(f"{label} is refused", code != 0 and "越出" in err, err)
+            status, text, _ = text_call(bridge, "list", path=path)
+            check(f"{label} is refused", status == 400 and "越出" in text, text[:300])
 
-        code, out, err = cli(session, "cat", "/etc/passwd")
+        status, text, _ = text_call(bridge, "read", path="/etc/passwd")
         check("absolute path is treated as root-relative, not the real root",
-              code != 0 and "不存在" in err, err or out)
+              status == 400 and "不存在" in text, text[:300])
 
-        for label, path in [("symlink to outside", "link_out"),
-                            ("file below a symlink to outside", "link_out/secret.txt")]:
-            code, out, err = cli(session, "ls" if "secret" not in path else "cat", path)
+        for label, path, op in [
+            ("symlink to outside", "link_out", "list"),
+            ("file below a symlink to outside", "link_out/secret.txt", "read"),
+        ]:
+            status, text, _ = text_call(bridge, op, path=path)
             check(f"{label} is refused by default",
-                  code != 0 and "符号链接" in err, err or out)
-            check(f"{label} leaks no secret content", "OUTSIDE-SECRET" not in out, out)
+                  status == 400 and "符号链接" in text, text[:300])
+            check(f"{label} leaks no secret content", "OUTSIDE-SECRET" not in text, text[:300])
 
         # ------------------------------------------------- direct HTTP access
-        base = info["url"] + "/" + info["token"]
-        status, body = http_get(base + "/list?path=.")
-        check("HTTP list works with the token",
-              status == 200 and b"README.txt" in body, f"{status} {body[:200]}")
-
-        status, body = http_get(info["url"] + "/wrongtoken/list?path=.")
+        status, body, _ = raw_get(bridge.url + "/wrongtoken/list?path=.")
         check("HTTP rejects a wrong token", status == 401, f"{status} {body[:120]}")
 
-        status, body = http_get(base + "/list?path=.", {"Origin": "https://evil.example"})
+        status, body, _ = raw_get(bridge.url + "/health")
+        check("HTTP requires the token in the URL path", status == 404, f"{status} {body[:120]}")
+
+        status, body, _ = request(bridge, "list", path=".", headers={"Origin": "https://evil.example"})
         check("HTTP rejects browser-originated requests", status == 403, f"{status} {body[:120]}")
 
-        status, body = http_get(base + "/read?path=data/big.bin&offset=200&length=1000")
-        check("HTTP raw read returns exact bytes",
-              status == 200 and body == big[200:1200], f"{status} {len(body)} bytes")
+        status, body, _ = request(bridge, "health", method="HEAD")
+        check("HTTP health is GET-only (HEAD is refused)", status == 405, f"{status} {body[:120]}")
 
-        status, body = http_get(base + "/read?path=../../outside/secret.txt")
-        check("HTTP also enforces the access root", status == 400 and b"OUTSIDE-SECRET" not in body,
-              f"{status} {body[:160]}")
-
-        # ------------------------------------------------------ pipe fallback
-        broken = WORK / "session_pipe_only.json"
-        pipe_info = dict(info)
-        pipe_info["url"] = "http://127.0.0.1:1"   # a port nothing listens on
-        broken.write_text(json.dumps(pipe_info), encoding="utf-8")
-        code, out, err = cli(broken, "ls", "data")
-        check("named-pipe fallback works when loopback TCP is unreachable",
-              code == 0 and "sample.txt" in out, err or out)
+        status, body, _ = request(bridge, "read", path="../../outside/secret.txt")
+        check("HTTP also enforces the access root",
+              status == 400 and b"OUTSIDE-SECRET" not in body, f"{status} {body[:160]}")
 
         # ------------------------------------------------ write-op audit trail
         ops = [json.loads(line) for line in ops_log.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -350,27 +289,28 @@ def main():
               not writes, writes[:5])
 
         # ------------------------------------------------- symlink opt-in path
-        symlink_bridge = Bridge(port, WORK / "session_sym.json", WORK / "known_sym.json", allow_symlinks=True)
-        check("second bridge starts with symlinks allowed", symlink_bridge.ready, symlink_bridge.startup_error)
+        symlink_bridge = Bridge(port, WORK / "known_sym.json", allow_symlinks=True)
+        check("second bridge starts with symlinks allowed",
+              symlink_bridge.ready, symlink_bridge.startup_error)
         if symlink_bridge.ready:
-            code, out, err = cli(WORK / "session_sym.json", "cat", "link_out/secret.txt")
+            status, text, _ = text_call(symlink_bridge, "read", path="link_out/secret.txt")
             check("allowing symlinks is what unblocks the escape (proves the default is the blocker)",
-                  code == 0 and "OUTSIDE-SECRET" in out, err or out)
+                  status == 200 and "OUTSIDE-SECRET" in text, text[:300])
 
-            code, out, err = cli(WORK / "session_sym.json", "ls", "..")
+            status, text, _ = text_call(symlink_bridge, "list", path="..")
             check("even with symlinks allowed, '..' traversal stays refused",
-                  code != 0, err or out)
+                  status == 400, text[:300])
 
         # ----------------------------------------------------- liveness error
-        info_alive = info
         bridge.stop()
-        symlink_bridge.stop()
-        symlink_bridge = None
+        if symlink_bridge is not None:
+            symlink_bridge.stop()
+            symlink_bridge = None
         time.sleep(0.5)
 
-        code, out, err = cli(session, "health")
-        check("a closed bridge yields an actionable error, not a hang",
-              code != 0 and ("无法连接" in err or "重新连接" in err or "未找到" in err), err)
+        status, body, _ = raw_get(f"{bridge.url}/{bridge.token}/health")
+        check("a closed bridge yields a transport error, not a hang",
+              status == 0, f"{status} {body[:200]}")
 
     finally:
         try:

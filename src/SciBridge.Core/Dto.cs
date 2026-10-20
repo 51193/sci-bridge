@@ -62,24 +62,8 @@ public sealed class HealthDto
     [JsonPropertyName("root")] public string Root { get; set; } = ".";
     [JsonPropertyName("home")] public string Home { get; set; } = "";
     [JsonPropertyName("readOnly")] public bool ReadOnly { get; set; } = true;
+    [JsonPropertyName("rootReachable")] public bool RootReachable { get; set; }
     [JsonPropertyName("allowSymlinks")] public bool AllowSymlinks { get; set; }
     [JsonPropertyName("operations")] public List<string> Operations { get; set; } = new();
     [JsonPropertyName("transport")] public string Transport { get; set; } = "";
-}
-
-/// <summary>Envelope used by the named-pipe transport, which is always JSON.</summary>
-public sealed class PipeEnvelope
-{
-    [JsonPropertyName("op")] public string Op { get; set; } = "";
-    [JsonPropertyName("path")] public string Path { get; set; } = ".";
-    [JsonPropertyName("offset")] public long Offset { get; set; }
-    [JsonPropertyName("length")] public int Length { get; set; }
-    [JsonPropertyName("glob")] public string? Glob { get; set; }
-    [JsonPropertyName("max")] public int Max { get; set; }
-    [JsonPropertyName("depth")] public int Depth { get; set; }
-    [JsonPropertyName("format")] public string? Format { get; set; }
-
-    [JsonPropertyName("ok")] public bool? Ok { get; set; }
-    [JsonPropertyName("error")] public string? Error { get; set; }
-    [JsonPropertyName("result")] public System.Text.Json.JsonElement? Result { get; set; }
 }

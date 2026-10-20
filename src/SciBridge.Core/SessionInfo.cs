@@ -1,10 +1,12 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
 
 namespace SciBridge;
 
 /// <summary>
-/// The short-lived descriptor of a live bridge. It never contains the SSH password.
+/// The in-memory description of one live bridge. It is never written to disk:
+/// agents reach the bridge over its loopback HTTP endpoint, so there is no
+/// session file for a sandbox to read (or for an agent to discover).
+///
 /// The token is a capability limited to this machine's loopback interface, to
 /// read-only operations, and to the lifetime of the bridge process.
 /// </summary>
@@ -21,9 +23,7 @@ public sealed class SessionInfo
     public string Home { get; set; } = "";
     public string Url { get; set; } = "";
     public string Token { get; set; } = "";
-    public string Pipe { get; set; } = "";
     public string CreatedUtc { get; set; } = "";
-    public string ExePath { get; set; } = "";
     public bool AllowSymlinks { get; set; }
 
     private static readonly JsonSerializerOptions Options = new()
@@ -31,46 +31,7 @@ public sealed class SessionInfo
         WriteIndented = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.Never,
     };
 
     public string ToJson() => JsonSerializer.Serialize(this, Options);
-
-    public static SessionInfo? TryLoad(string path)
-    {
-        try
-        {
-            if (!File.Exists(path)) return null;
-            var info = JsonSerializer.Deserialize<SessionInfo>(File.ReadAllText(path), Options);
-            if (info is null || string.IsNullOrWhiteSpace(info.Token)) return null;
-            return info;
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    public void SaveAtomic(string path)
-    {
-        var dir = Path.GetDirectoryName(path);
-        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-        var tmp = path + ".tmp";
-        File.WriteAllText(tmp, ToJson());
-        File.Move(tmp, path, overwrite: true);
-    }
-
-    /// <summary>Deletes the descriptor only when it still belongs to this session.</summary>
-    public void DeleteIfOwned(string path)
-    {
-        try
-        {
-            var existing = TryLoad(path);
-            if (existing is not null && existing.Token == Token) File.Delete(path);
-        }
-        catch
-        {
-            // A leftover descriptor is harmless: the CLI validates liveness before use.
-        }
-    }
 }

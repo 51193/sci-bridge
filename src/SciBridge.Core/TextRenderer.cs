@@ -50,6 +50,7 @@ public static class TextRenderer
                 sb.AppendLine("root: " + health.Root);
                 sb.AppendLine("home: " + health.Home);
                 sb.AppendLine("readOnly: true");
+                sb.AppendLine("rootReachable: " + (health.RootReachable ? "true" : "false"));
                 sb.AppendLine("allowSymlinks: " + (health.AllowSymlinks ? "true" : "false"));
                 sb.AppendLine("operations: " + string.Join(", ", health.Operations));
                 return sb.ToString().TrimEnd('\n');

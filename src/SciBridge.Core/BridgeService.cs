@@ -78,18 +78,29 @@ public sealed class BridgeService
         }
     }
 
-    private HealthDto Health() => new()
+    /// <summary>
+    /// A real liveness probe, not just a description of the process: a cheap
+    /// LSTAT of the access root proves that the SSH session and the approved
+    /// root are both usable. A dead SSH connection therefore fails health.
+    /// </summary>
+    private HealthDto Health()
     {
-        Version = BuildInfo.Version,
-        Host = _session.Host,
-        Port = _session.Port,
-        User = _session.User,
-        Root = _fs.Root,
-        Home = _fs.Home,
-        ReadOnly = true,
-        AllowSymlinks = _fs.AllowSymlinks,
-        Operations = OperationNames.ToList(),
-    };
+        _fs.Stat(".");
+
+        return new HealthDto
+        {
+            Version = BuildInfo.Version,
+            Host = _session.Host,
+            Port = _session.Port,
+            User = _session.User,
+            Root = _fs.Root,
+            Home = _fs.Home,
+            ReadOnly = true,
+            RootReachable = true,
+            AllowSymlinks = _fs.AllowSymlinks,
+            Operations = OperationNames.ToList(),
+        };
+    }
 
     private static string FriendlyFailure(Exception ex) => ex switch
     {

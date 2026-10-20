@@ -10,8 +10,7 @@ internal static class Program
     private static int Main(string[] args)
     {
         // Diagnostics: report the real laid-out geometry so the UI can be verified
-        // without a human looking at it (used by the automated checks). Checked before
-        // the CLI so it is not mistaken for an unknown command.
+        // without a human looking at it (used by the automated checks).
         if (args.Length > 0 && args[0] == "--dump-ui")
         {
             ApplicationConfiguration.Initialize();
@@ -24,9 +23,10 @@ internal static class Program
             return SelfTest.Run(args);
         }
 
-        // Any argument means "command line": run it and never open a window.
-        var cliResult = CliRunner.TryRun(args);
-        if (cliResult is not null) return cliResult.Value;
+        if (args.Length > 0)
+        {
+            return RunDiagnostic(args);
+        }
 
         // No arguments: the user double-clicked the executable.
         HideConsoleWindow();
@@ -44,6 +44,64 @@ internal static class Program
 
         Application.Run(new MainForm());
         return 0;
+    }
+
+    /// <summary>
+    /// Only human diagnostics remain on the command line. Agents use the loopback
+    /// HTTP endpoint from the handoff text, never this executable.
+    /// </summary>
+    private static int RunDiagnostic(string[] args)
+    {
+        switch (args[0])
+        {
+            case "--version" or "-v" or "version":
+                Console.WriteLine("SciBridge " + BuildInfo.Version);
+                return 0;
+
+            case "--help" or "-h" or "/?" or "help":
+                PrintHelp();
+                return 0;
+
+            // Old handoffs / old skills may still try the removed CLI verbs.
+            case "health" or "ls" or "cat" or "stat" or "find":
+                Console.Error.WriteLine("agent CLI 已移除：Codex 不再执行 SciBridge.exe。");
+                Console.Error.WriteLine("请使用交接文字里的本机 HTTP 地址（curl.exe 访问 127.0.0.1）。");
+                return 2;
+
+            default:
+                Console.Error.WriteLine($"未知参数：{args[0]}");
+                Console.Error.WriteLine("Codex 请使用交接文字里的 HTTP 地址，不要调用 SciBridge.exe。");
+                PrintHelp();
+                return 2;
+        }
+    }
+
+    private static void PrintHelp()
+    {
+        Console.WriteLine($"""
+            SciBridge {BuildInfo.Version} — 机构服务器只读数据桥
+
+            用法：
+              双击 SciBridge.exe                 打开窗口，连接服务器
+              SciBridge.exe --self-test [选项]   不打开窗口，连接服务器并跑一遍只读操作
+              SciBridge.exe --dump-ui            导出窗口控件几何（自动验证用）
+              SciBridge.exe --version
+
+            连接成功后，窗口里的“交接文字”包含本机 HTTP 地址和短期令牌。
+            把整段文字粘给 Codex，Codex 用 curl.exe 访问 127.0.0.1 即可读取数据；
+            不需要执行 SciBridge.exe，也不需要读取任何会话文件。
+
+            只读保证：只提供列目录、看属性、读文件、按名字查找。
+            没有任何写入、删除、改名、上传或远程命令执行，且被限制在“可读根目录”内。
+
+            --self-test 选项：
+              --host <地址>    默认 127.0.0.1
+              --port <端口>    默认 2222
+              --user <账号>    默认 test
+              --root <目录>    可读根目录，默认 .
+              --password <密码>  不填则交互式输入（推荐）
+              --allow-symlinks 允许跟随符号链接（一般不要用）
+            """);
     }
 
     /// <summary>

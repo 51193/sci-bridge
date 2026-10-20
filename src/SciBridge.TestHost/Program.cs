@@ -1,11 +1,14 @@
 using SciBridge;
 
 // Cross-platform host used by the automated tests. It exercises exactly the same
-// Core library the Windows GUI uses, so the loopback/pipe/read-only behaviour is
+// Core library the Windows GUI uses, so the loopback HTTP/read-only behaviour is
 // verified natively on Linux without needing a Windows machine.
 //
 //   SciBridge.TestHost serve --host H --port P --user U --password PW [--root R] ...
-//   SciBridge.TestHost <any CLI arguments>
+//
+// It prints one READY line with the session JSON (including the loopback URL and
+// token), then the exact handoff text the GUI would copy. Tests call the HTTP
+// endpoint directly, which is also the only agent-facing transport.
 
 var argv = Environment.GetCommandLineArgs().Skip(1).ToArray();
 
@@ -14,7 +17,9 @@ if (argv.Length > 0 && argv[0] == "serve")
     return await ServeAsync(argv.Skip(1).ToArray());
 }
 
-return CliRunner.TryRun(argv) ?? 0;
+Console.Error.WriteLine("usage: SciBridge.TestHost serve --host H --port P --user U --password PW [--root R]");
+Console.Error.WriteLine("       [--known-hosts FILE] [--allow-symlinks] [--reject-hostkey]");
+return 2;
 
 static async Task<int> ServeAsync(string[] args)
 {
@@ -22,9 +27,7 @@ static async Task<int> ServeAsync(string[] args)
     var user = "";
     var password = "";
     var root = ".";
-    var sessionPath = "";
     var knownHosts = "";
-    var exePath = "";
     var port = 22;
     var allowSymlinks = false;
     var autoAccept = true;
@@ -38,11 +41,12 @@ static async Task<int> ServeAsync(string[] args)
             case "--user": user = args[++i]; break;
             case "--password": password = args[++i]; break;
             case "--root": root = args[++i]; break;
-            case "--session": sessionPath = args[++i]; break;
             case "--known-hosts": knownHosts = args[++i]; break;
-            case "--exe-path": exePath = args[++i]; break;
             case "--allow-symlinks": allowSymlinks = true; break;
             case "--reject-hostkey": autoAccept = false; break;
+            default:
+                Console.Error.WriteLine($"未知参数：{args[i]}");
+                return 2;
         }
     }
 
@@ -56,14 +60,11 @@ static async Task<int> ServeAsync(string[] args)
             store,
             interaction);
 
-        using var bridge = BridgeHost.Start(
-            fs, host, port, user,
-            string.IsNullOrEmpty(sessionPath) ? null : sessionPath,
-            string.IsNullOrEmpty(exePath) ? null : exePath);
+        using var bridge = BridgeHost.Start(fs, host, port, user);
 
         Console.WriteLine("READY " + bridge.Session.ToJson().Replace('\n', ' ').Replace('\r', ' '));
         Console.WriteLine("----- HANDOFF -----");
-        Console.WriteLine(HandoffText.Generate(bridge.Session, bridge.SessionPath));
+        Console.WriteLine(HandoffText.Generate(bridge.Session));
         Console.WriteLine("----- END -----");
         Console.Out.Flush();
 

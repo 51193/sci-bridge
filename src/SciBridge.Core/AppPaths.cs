@@ -2,14 +2,13 @@ using System.Runtime.InteropServices;
 
 namespace SciBridge;
 
-/// <summary>Well-known per-user locations shared by the GUI and the CLI.</summary>
+/// <summary>Well-known per-user locations shared by the GUI and diagnostics.</summary>
 public static class AppPaths
 {
     public const string AppName = "SciBridge";
 
     public static string DataDir { get; } = ResolveDataDir();
 
-    public static string SessionFile => Path.Combine(DataDir, "session.json");
     public static string KnownHostsFile => Path.Combine(DataDir, "known_hosts.json");
     public static string SettingsFile => Path.Combine(DataDir, "settings.json");
     public static string LogFile => Path.Combine(DataDir, "scibridge.log");
@@ -46,21 +45,5 @@ public static class AppPaths
         var fallback = Path.Combine(AppContext.BaseDirectory, "data");
         Directory.CreateDirectory(fallback);
         return fallback;
-    }
-
-    /// <summary>
-    /// Session descriptor search order. An explicit path short-circuits the search.
-    /// A copy next to the executable is honoured so the tool also works portably.
-    /// </summary>
-    public static IEnumerable<string> SessionFileCandidates(string? explicitPath)
-    {
-        if (!string.IsNullOrWhiteSpace(explicitPath))
-        {
-            yield return explicitPath!;
-            yield break;
-        }
-
-        yield return SessionFile;
-        yield return Path.Combine(AppContext.BaseDirectory, "session.json");
     }
 }

@@ -4,9 +4,13 @@ obj/
 .build/
 .venv/
 .testtmp/
+.testtmp-go/
 .testtmp-wine/
+.testtmp-wine2/
 .wineprefix/
+.wineprefix-selftest/
 .winerun/
+.winerun-selftest/
 *.user
 
 # Local test leftovers

@@ -16,7 +16,6 @@ internal sealed class MainForm : Form
     private readonly CheckBox _symlinkBox = new();
     private readonly Button _connectButton = new();
     private readonly Button _copyButton = new();
-    private readonly Button _infoButton = new();
     private readonly Button _folderButton = new();
     private readonly Label _statusLabel = new();
     private readonly TextBox _handoffBox = new();
@@ -138,16 +137,6 @@ internal sealed class MainForm : Form
         _copyButton.Click += (_, _) => Dialogs.CopyToClipboard(this, _handoffBox.Text);
         buttons.Controls.Add(_copyButton);
 
-        _infoButton.Text = "显示本机连接信息";
-        _infoButton.AutoSize = true;
-        _infoButton.Padding = new Padding(10, 4, 10, 4);
-        _infoButton.Enabled = false;
-        _infoButton.Click += (_, _) =>
-        {
-            if (_bridge is not null) Dialogs.ShowConnectionInfo(this, _bridge.Session);
-        };
-        buttons.Controls.Add(_infoButton);
-
         _folderButton.Text = "打开数据目录";
         _folderButton.AutoSize = true;
         _folderButton.Padding = new Padding(10, 4, 10, 4);
@@ -171,7 +160,8 @@ internal sealed class MainForm : Form
         _handoffBox.WordWrap = true;
         _handoffBox.BackColor = SystemColors.Window;
         _handoffBox.Text = "连接成功后，这里会出现一段“交接文字”。\r\n\r\n" +
-                           "把它整段复制，粘贴到 Codex 的对话里，Codex 就知道该怎么读取数据了。";
+                           "把它整段复制，粘贴到 Codex 的对话里；里面有本机 HTTP 地址和短期令牌，" +
+                           "Codex 不需要执行本程序。";
         root.Controls.Add(_handoffBox, 0, 4);
 
         Controls.Add(root);
@@ -324,7 +314,6 @@ internal sealed class MainForm : Form
         SetBusy(false);
         _connectButton.Text = "断开";
         _copyButton.Enabled = true;
-        _infoButton.Enabled = true;
         SetInputsEnabled(false);
 
         var scopeText = string.IsNullOrWhiteSpace(bridge.Session.Root) || bridge.Session.Root == "."
@@ -334,14 +323,15 @@ internal sealed class MainForm : Form
         SetStatus($"已连接（只读）：{bridge.Session.User}@{bridge.Session.Host}:{bridge.Session.Port}　" +
                   $"可读范围：{scopeText}。把下面的交接文字发给 Codex 即可开始。关闭窗口会断开连接。");
 
-        _handoffBox.Text = HandoffText.Generate(bridge.Session, bridge.SessionPath);
+        _handoffBox.Text = HandoffText.Generate(bridge.Session);
         _handoffBox.SelectionStart = 0;
         _handoffBox.SelectionLength = 0;
 
         Dialogs.CopyToClipboard(this, _handoffBox.Text);
         Dialogs.Info(this,
             "已连接（只读）。\n\n" +
-            "交接文字已经复制到剪贴板，直接粘贴到 Codex 的对话里即可。\n\n" +
+            "交接文字已经复制到剪贴板，直接粘贴到 Codex 的对话里即可。\n" +
+            "里面有本机 HTTP 地址和短期令牌：只在这台电脑上有效，不要外发。\n\n" +
             "如果之后还想再复制一次，点窗口里的“复制交接文字”。\n" +
             "关闭这个窗口就会断开连接。",
             "连接成功");
@@ -364,7 +354,6 @@ internal sealed class MainForm : Form
 
         _connectButton.Text = "连接";
         _copyButton.Enabled = false;
-        _infoButton.Enabled = false;
         SetInputsEnabled(true);
         SetStatus("已断开。需要时重新点“连接”。");
         _handoffBox.Text = "已断开连接。";

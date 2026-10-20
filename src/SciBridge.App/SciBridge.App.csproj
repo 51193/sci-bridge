@@ -2,10 +2,11 @@
 
   <PropertyGroup>
     <!--
-      Console subsystem on purpose. An agent running `SciBridge.exe ls ...` from
-      PowerShell must have its stdout captured and waited on; a WinExe (GUI subsystem)
-      process would neither block the shell nor deliver output. In GUI mode the
-      console window is hidden immediately, so double-clicking still feels like an app.
+      Console subsystem on purpose: human diagnostics (version, help,
+      self-test, dump-ui) must be waited on and captured by the shell.
+      Agents use the loopback HTTP endpoint instead of this executable.
+      In GUI mode the console window is hidden immediately, so double-clicking
+      still feels like an app.
     -->
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>

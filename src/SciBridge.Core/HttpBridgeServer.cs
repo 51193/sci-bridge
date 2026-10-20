@@ -111,7 +111,7 @@ public sealed class HttpBridgeServer : IDisposable
                 var pathPart = queryIndex < 0 ? target : target[..queryIndex];
                 var queryPart = queryIndex < 0 ? "" : target[(queryIndex + 1)..];
 
-                var segments = pathPart.Trim('/').Split('/');
+                var segments = pathPart.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
                 if (segments.Length < 2 || segments[0].Length == 0)
                 {
                     await WriteAsync(stream, 404, "text/plain; charset=utf-8",
@@ -213,6 +213,7 @@ public sealed class HttpBridgeServer : IDisposable
         ["X-SciBridge-Offset"] = data.Offset.ToString(),
         ["X-SciBridge-Size"] = data.Size.ToString(),
         ["X-SciBridge-Bytes"] = data.Data.Length.ToString(),
+        ["X-SciBridge-Eof"] = (data.Offset + data.Data.Length >= data.Size ? "true" : "false"),
     };
 
     private static async Task WriteAsync(
