@@ -116,6 +116,18 @@ dotnet publish src/SciBridge.App/SciBridge.App.csproj -c Release
 
 `env.sh` 只是把 `NUGET_PACKAGES` 等指向仓库内部；在普通机器上可以不用。
 
+## 发布
+
+交付二进制不进入 git 历史（`dist/SciBridge.exe` 和根目录的 `*.zip` 已在 `.gitignore` 中），
+由 GitHub Actions 构建并附加到 Release：
+
+- 在 Actions 页面手动运行 **Release**，填入 tag（如 `v1.0.0`）；或
+- 推送 tag 触发：`git tag v1.0.0 && git push origin v1.0.0`
+
+工作流会交叉编译 `SciBridge.exe`、构建 Go 测试服务器，生成
+`SciBridge-<版本>-win11.zip`、同名独立 exe 和 `SHA256SUMS.txt`，
+并创建或更新对应的 GitHub Release。
+
 ## 测试
 
 ```bash

@@ -1,0 +1,122 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（必须以 v 开头，例如 v1.0.0）'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_NOLOGO: '1'
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
+
+jobs:
+  release:
+    name: Build and publish Windows binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache: false
+
+      - name: Resolve release tag
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
+            echo "::error::tag '$TAG' 不合法，应形如 v1.2.3"
+            exit 1
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Publish SciBridge.exe
+        run: |
+          dotnet publish src/SciBridge.App/SciBridge.App.csproj \
+            -c Release \
+            -p:Version="$VERSION" \
+            -o "$RUNNER_TEMP/publish/app"
+
+      - name: Build test server
+        run: |
+          mkdir -p "$RUNNER_TEMP/publish/testserver"
+          export GOFLAGS=-mod=mod GOPROXY=off GOSUMDB=off
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+            go build -C tools/testserver -ldflags="-s -w" \
+            -o "$RUNNER_TEMP/publish/testserver/SciBridgeTestServer.exe" ./...
+
+      - name: Assemble release files
+        run: |
+          set -euxo pipefail
+          APP="$RUNNER_TEMP/publish/app/SciBridge.exe"
+          test -f "$APP"
+
+          mkdir -p release stage/skill stage/本机测试
+          cp "$APP" "release/SciBridge-${VERSION}-win11.exe"
+          cp "$APP" stage/SciBridge.exe
+
+          cp -a dist/skill/. stage/skill/
+          cp dist/使用说明.txt dist/安装Codex技能.cmd stage/
+          cp "$RUNNER_TEMP/publish/testserver/SciBridgeTestServer.exe" stage/本机测试/
+          cp dist/本机测试/启动测试服务器.cmd \
+            dist/本机测试/自检.cmd \
+            dist/本机测试/自测说明.txt \
+            stage/本机测试/
+
+          (cd stage && zip -9 -r "$GITHUB_WORKSPACE/release/SciBridge-${VERSION}-win11.zip" .)
+          (cd release && sha256sum SciBridge-*.exe SciBridge-*.zip > SHA256SUMS.txt)
+
+          ls -lh release
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          {
+            printf 'Windows 11 x64 自包含单文件，无需安装 Python 或 .NET。\n\n'
+            printf -- '- `SciBridge-%s-win11.exe`：主程序\n' "$VERSION"
+            printf -- '- `SciBridge-%s-win11.zip`：完整包（使用说明、Codex 技能、本机测试服务器）\n' "$VERSION"
+            printf -- '- `SHA256SUMS.txt`：SHA-256 校验和\n\n'
+            printf '首次运行可能出现 SmartScreen 提示，处理方式见包内 `使用说明.txt`。\n'
+          } > "$RUNNER_TEMP/notes.md"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release/* --clobber
+          else
+            gh release create "$TAG" release/* \
+              --target "$GITHUB_SHA" \
+              --title "SciBridge $VERSION" \
+              --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+
+          gh release view "$TAG" --json url,tagName,assets \
+            --jq '"release: \(.url)\nassets: \(.assets | length)"'
