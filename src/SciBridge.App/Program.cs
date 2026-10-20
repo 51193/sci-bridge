@@ -29,7 +29,7 @@ internal static class Program
         }
 
         // No arguments: the user double-clicked the executable.
-        HideConsoleWindow();
+        ReleaseConsoleWindow();
         ApplicationConfiguration.Initialize();
 
         using var mutex = new Mutex(initiallyOwned: true, MutexName, out var isFirstInstance);
@@ -105,28 +105,18 @@ internal static class Program
     }
 
     /// <summary>
-    /// The executable is a console-subsystem binary, so Windows gives it a console
-    /// window. In GUI mode that window is unwanted, so hide it before the form appears.
+    /// The executable is a console-subsystem binary so diagnostics keep working
+    /// from cmd/PowerShell. In GUI mode, detach from the console: if the console
+    /// was created just for this process (double-click), it closes; if it is the
+    /// user's existing cmd/PowerShell console, it is left untouched.
     /// </summary>
-    private static void HideConsoleWindow()
+    private static void ReleaseConsoleWindow()
     {
-        try
-        {
-            var handle = GetConsoleWindow();
-            if (handle != IntPtr.Zero) ShowWindow(handle, SW_HIDE);
-        }
-        catch
-        {
-            // Cosmetic only; never fail startup because of it.
-        }
+        try { FreeConsole(); }
+        catch { /* Cosmetic only; never fail startup because of it. */ }
     }
 
-    private const int SW_HIDE = 0;
-
     [DllImport("kernel32.dll")]
-    private static extern IntPtr GetConsoleWindow();
-
-    [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    private static extern bool FreeConsole();
 }
