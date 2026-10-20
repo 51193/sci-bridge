@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SciBridge.App/SciBridge.App.csproj" />
+    <Project Path="src/SciBridge.Core/SciBridge.Core.csproj" />
+    <Project Path="src/SciBridge.TestHost/SciBridge.TestHost.csproj" />
+  </Folder>
+</Solution>

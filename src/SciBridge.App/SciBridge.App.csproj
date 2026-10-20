@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      Console subsystem on purpose. An agent running `SciBridge.exe ls ...` from
+      PowerShell must have its stdout captured and waited on; a WinExe (GUI subsystem)
+      process would neither block the shell nor deliver output. In GUI mode the
+      console window is hidden immediately, so double-clicking still feels like an app.
+    -->
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+
+    <AssemblyName>SciBridge</AssemblyName>
+    <RootNamespace>SciBridge.App</RootNamespace>
+    <Version>1.0.0</Version>
+    <Product>SciBridge 只读科研数据桥</Product>
+    <AssemblyTitle>SciBridge 只读科研数据桥</AssemblyTitle>
+    <Company>SciBridge</Company>
+    <Description>Read-only SSH/SFTP bridge for local AI agents on Windows.</Description>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+
+    <!-- Self-contained single file: the user's only dependency is Windows itself. -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <!--
+      Compression is deliberately OFF. A compressed single-file .NET executable looks
+      like a packer to antivirus heuristics, and a false positive is fatal for a user
+      who cannot debug it. The cost is size, not correctness.
+    -->
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
+    <DebugType>none</DebugType>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../SciBridge.Core/SciBridge.Core.csproj" />
+    <!-- DPAPI (ProtectedData) is part of the Windows Desktop framework on .NET 10. -->
+  </ItemGroup>
+
+</Project>
