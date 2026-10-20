@@ -7,6 +7,7 @@ obj/
 .testtmp-go/
 .testtmp-wine/
 .testtmp-wine2/
+.testtmp-*/
 .wineprefix/
 .wineprefix-selftest/
 .winerun/
@@ -17,17 +18,13 @@ obj/
 shot-*.png
 uidump.txt
 
-# Distribution output is kept on purpose (dist/), so it is not ignored.
-
 # The test server generates its own host key on first run
 SciBridgeTestServer_hostkey
 testserver_hostkey
-dist/本机测试/testserver_hostkey
 
-# 交付二进制超过 GitHub 单文件 100 MB 上限（exe 109 MB、zip 48 MB），
-# 因此不进入 git 历史；发布时作为 GitHub Release 附件上传。
+# 交付二进制超过 GitHub 单文件 100 MB 上限，因此不进入 git 历史；
+# 发布时作为 GitHub Release 附件上传。
 /dist/SciBridge.exe
-/SciBridge-1.0.0-win11.zip
 
 # Python caches
 __pycache__/

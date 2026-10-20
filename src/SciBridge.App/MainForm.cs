@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using SciBridge;
 
 namespace SciBridge.App;
@@ -20,13 +21,17 @@ internal sealed class MainForm : Form
     private readonly Label _statusLabel = new();
     private readonly Label _versionLabel = new();
     private readonly TextBox _handoffBox = new();
+    private readonly bool _checkUpdates;
 
     private BridgeHost? _bridge;
     private bool _busy;
+    private bool _closingForUpdate;
+    private bool _updateCheckStarted;
     private volatile bool _closing;
 
-    public MainForm()
+    public MainForm(bool checkUpdates = true)
     {
+        _checkUpdates = checkUpdates;
         BuildUi();
         LoadSettingsIntoFields();
     }
@@ -177,6 +182,7 @@ internal sealed class MainForm : Form
 
         Controls.Add(root);
         AcceptButton = _connectButton;
+        Shown += (_, _) => StartUpdateCheck();
 
         var tips = new ToolTip();
         tips.SetToolTip(_rootBox, "例如 . 或 data/2024。Codex 无法访问这个目录之外的内容。");
@@ -407,8 +413,163 @@ internal sealed class MainForm : Form
         catch (Exception) { /* The window went away while connecting. */ }
     }
 
+    // ------------------------------------------------------------- update
+    private void StartUpdateCheck()
+    {
+        if (!_checkUpdates || _updateCheckStarted || _closing) return;
+        _updateCheckStarted = true;
+
+        // Development builds (0.0.0-dev) do not auto-update.
+        if (!ReleaseVersion.TryParse(BuildInfo.Version, out _)) return;
+        _ = CheckForUpdatesAsync();
+    }
+
+    private async Task CheckForUpdatesAsync()
+    {
+        try
+        {
+            var info = await UpdateService.CheckAsync(BuildInfo.Version, CancellationToken.None);
+            if (info is null || _closing || IsDisposed) return;
+
+            if (IsHandleCreated)
+                BeginInvoke(new Action(() => PromptForUpdate(info)));
+        }
+        catch (Exception ex)
+        {
+            Log.Write("update check failed: " + ex.Message);
+        }
+    }
+
+    private void PromptForUpdate(UpdateInfo info)
+    {
+        if (_closing || _closingForUpdate) return;
+
+        var text =
+            $"发现新版本 {info.Version}（当前 {BuildInfo.Version}）。\n\n" +
+            "更新会关闭当前 SciBridge 连接，并在下载校验完成后重启程序。\n\n" +
+            "是否下载并更新？";
+
+        if (MessageBox.Show(this, text, "发现新版本",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+        {
+            // "稍后" is only for this session: the next launch checks again.
+            return;
+        }
+
+        if (!CanWriteInstallDirectory())
+        {
+            MessageBox.Show(this,
+                "当前程序目录不可写（可能在 Program Files 或只读位置）。\n\n" +
+                "请把 SciBridge.exe 放到你有写权限的文件夹后重新启动。",
+                "无法更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        DownloadAndApply(info);
+    }
+
+    private static bool CanWriteInstallDirectory()
+    {
+        var exe = Environment.ProcessPath;
+        var dir = string.IsNullOrWhiteSpace(exe) ? null : Path.GetDirectoryName(exe);
+        if (string.IsNullOrWhiteSpace(dir)) return false;
+
+        var probe = Path.Combine(dir, ".scibridge-write-test");
+        try
+        {
+            using (File.Create(probe)) { }
+            File.Delete(probe);
+            return true;
+        }
+        catch
+        {
+            try { if (File.Exists(probe)) File.Delete(probe); } catch { }
+            return false;
+        }
+    }
+
+    private void DownloadAndApply(UpdateInfo info)
+    {
+        using var progress = new UpdateProgressForm(info);
+        var result = progress.ShowDialog(this);
+
+        if (result != DialogResult.OK || string.IsNullOrWhiteSpace(progress.DownloadedPath))
+        {
+            if (!string.IsNullOrWhiteSpace(progress.Error))
+            {
+                MessageBox.Show(this, "更新下载失败：\n\n" + progress.Error,
+                    "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            return;
+        }
+
+        ApplyUpdate(progress.DownloadedPath);
+    }
+
+    private void ApplyUpdate(string stagedExe)
+    {
+        var installExe = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(installExe) || !File.Exists(installExe))
+        {
+            MessageBox.Show(this, "找不到当前程序路径，无法安装更新。",
+                "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var installDir = Path.GetDirectoryName(installExe);
+        if (string.IsNullOrWhiteSpace(installDir))
+        {
+            MessageBox.Show(this, "找不到当前程序目录，无法安装更新。",
+                "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        try
+        {
+            var startInfo = new ProcessStartInfo(stagedExe)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = installDir,
+            };
+            startInfo.ArgumentList.Add("--apply-update");
+            startInfo.ArgumentList.Add("--parent-pid");
+            startInfo.ArgumentList.Add(Environment.ProcessId.ToString());
+            startInfo.ArgumentList.Add("--install-exe");
+            startInfo.ArgumentList.Add(installExe);
+            startInfo.ArgumentList.Add("--staged-exe");
+            startInfo.ArgumentList.Add(stagedExe);
+
+            if (Process.Start(startInfo) is null)
+                throw new InvalidOperationException("无法启动更新助手。");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, "无法启动更新：\n\n" + ex.Message,
+                "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        // The helper waits for this process to exit, then swaps the exe and
+        // starts the new version. Do not ask the usual "close connection?"
+        // question during this deliberate restart.
+        _closingForUpdate = true;
+        try { _bridge?.Dispose(); } catch { /* best effort */ }
+        _bridge = null;
+        Close();
+    }
+
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
+        if (_closingForUpdate)
+        {
+            _closing = true;
+            try { _bridge?.Dispose(); } catch { /* best effort */ }
+            _bridge = null;
+            base.OnFormClosing(e);
+            return;
+        }
+
         if (_bridge is not null && e.CloseReason == CloseReason.UserClosing)
         {
             var confirmed = Dialogs.Confirm(this,

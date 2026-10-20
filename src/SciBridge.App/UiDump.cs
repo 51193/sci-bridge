@@ -17,7 +17,7 @@ internal static class UiDump
         {
             // Match the CLI so Chinese labels survive redirection.
             try { Console.OutputEncoding = new UTF8Encoding(false); } catch { /* no console */ }
-            using var form = new MainForm
+            using var form = new MainForm(checkUpdates: false)
             {
                 StartPosition = FormStartPosition.Manual,
                 Location = new Point(-4000, -4000),

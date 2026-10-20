@@ -14,7 +14,7 @@
 2. 双击，填服务器信息，点"连接"。
 3. 交接文字会自动复制；粘进 Codex 即可。文字里有本机 HTTP 地址和短期令牌。
 
-面向无编程背景用户的完整说明见 [`dist/使用说明.txt`](dist/使用说明.txt)。
+程序不附带 skill、独立说明文档或测试服务器；使用说明就在窗口和交接文字里。
 
 ---
 
@@ -36,7 +36,7 @@ HTTP 路线不需要执行 exe、不需要读文件，只需要 `curl.exe`（系
 - `SciBridge.exe` 只负责 GUI 和可选的自检，不再被 Codex 调用。
 
 Codex 的沙箱仍可能禁止子进程访问回环网络（表现为 `EACCES` / 连接被拒）。
-交接文字和 skill 都会提示 agent：**向用户申请“允许本机网络访问”**，不要关闭防火墙。
+交接文字会提示 agent：**向用户申请“允许本机网络访问”**，不要关闭防火墙。
 
 ---
 
@@ -52,7 +52,7 @@ Codex 的沙箱仍可能禁止子进程访问回环网络（表现为 `EACCES` /
 | GUI 不能改 IP / 账号（只有端口和密码可改） | 地址、端口、账号、密码、**可读根目录**全部可填 |
 | 主机公钥写死在某台服务器 | TOFU + 指纹确认 + 本地固定；变化时硬停并给指引 |
 | 没有访问范围限制 | 三层只读保证 + 可读根目录约束 + 符号链接默认不跟随 |
-| ZIP + 安装器 + 快捷方式 + 5 页 PDF | 一个 exe + 一页说明 |
+| ZIP + 安装器 + 快捷方式 + 5 页 PDF | 一个 exe；不附带 skill/说明/测试服务器 |
 
 ---
 
@@ -71,17 +71,23 @@ src/
 │   ├─ HandoffText.cs       生成交接文字（URL + 令牌 + curl 示例）
 │   ├─ TextRenderer.cs      文本输出（ls -l 风格）
 │   ├─ HostKeyStore.cs      指纹固定存储
-│   └─ Settings.cs          非机密偏好 + DPAPI blob 占位
+│   ├─ Settings.cs          非机密偏好 + DPAPI blob 占位
+│   ├─ BuildInfo.cs         从程序集读取内嵌版本
+│   ├─ UpdateConfig.cs      固定更新仓库与资源名
+│   ├─ ReleaseVersion.cs    稳定版 SemVer 解析/比较
+│   └─ UpdateService.cs     GitHub Release 检查、下载、SHA-256 校验
 ├─ SciBridge.App/           Windows GUI 外壳（net10.0-windows，WinForms）
 │   ├─ Program.cs           GUI / 诊断入口；不再提供 ls/cat CLI
-│   ├─ MainForm.cs          主窗口
+│   ├─ MainForm.cs          主窗口 + 启动后异步更新检查
+│   ├─ UpdateProgressForm.cs 下载/校验进度
+│   ├─ UpdateApplier.cs     隐藏 helper：等待退出、替换 exe、重启
 │   ├─ Dialogs.cs           主机公钥确认、2FA
 │   ├─ SecretStore.cs       DPAPI 加解密（"记住密码"）
 │   ├─ SelfTest.cs          --self-test：真实连接 + 真实 HTTP 只读检查
 │   └─ UiDump.cs            --dump-ui：导出真实版面几何用于自动验证
 └─ SciBridge.TestHost/      Linux 下的跨平台主机，供自动化测试复用同一套 Core
 
-tools/testserver/          交付给用户的“本机测试服务器”（Go，零依赖静态 exe）
+tools/testserver/          仅开发测试用的本机测试服务器；不随发布包分发
 tests/
 ├─ sftp_server.py           基于 paramiko 的真实 SSH/SFTP 服务端（只读、记录所有请求）
 ├─ bridge_client.py         测试共享的 HTTP 客户端/Bridge 进程辅助
@@ -90,7 +96,6 @@ tests/
 ├─ wine_check.py            8 项：用 Wine 验证交付的 Windows exe（自检/HTTP 路径）
 └─ wine_selftest.py         14 项断言：Windows 测试服务器 + Windows SciBridge 全链路
 
-skills/sci-data-bridge/     给 Codex 的 skill（含 references 与 agents/openai.yaml）
 tools/make_icon.py          生成 app.ico（纯标准库，附 ASCII 预览）
 ```
 
@@ -106,6 +111,9 @@ tools/make_icon.py          生成 app.ico（纯标准库，附 ASCII 预览）
   cmd/PowerShell 等待并捕获输出。GUI 模式启动时调用 `FreeConsole()`：双击产生的
   控制台/pwsh 窗口会被关闭；从已有 cmd/PowerShell 启动时只脱离控制台，不会把
   用户自己的终端窗口隐藏或关掉。
+- **内置更新检查**：GUI 显示后异步查询 GitHub 最新稳定 Release；发现新版本才
+  弹窗询问，不阻塞启动。更新只下载并替换 `SciBridge.exe`，校验 SHA-256 后用临时
+  helper 完成替换，失败保留旧版本。选择“稍后”只跳过本次，下次启动会再次提醒。
 - **不开单文件压缩**：压缩过的 .NET 单文件很像"加壳程序"，容易被杀软误报，
   而目标用户没有能力排查误报。代价只是体积（约 110 MB）。
 
@@ -150,19 +158,27 @@ dotnet publish src/SciBridge.App/SciBridge.App.csproj -c Release -p:Version=1.0.
   `SessionInfo.AppVersion` / `health` 返回值。
 - GUI 右下角显示这个版本。非 tag 的本地构建显示 `0.0.0-dev`，不会被误认为发布版。
 
+### 更新
+
+- GUI 显示后异步请求 GitHub `releases/latest`，只接受稳定版；`0.0.0-dev` 不自动更新。
+- 发现新版本才弹窗询问；“稍后”只跳过本次，下次启动会再次提醒。
+- 只下载 `SciBridge-<版本>-win11.exe`，并用同 Release 的 `SHA256SUMS.txt` 校验。
+- 下载完成后启动隐藏 helper；它等待旧进程退出，备份旧 exe、替换、重启。失败会保留/恢复旧版本。
+- 更新包不包含 skill、说明或测试服务器；也不做代码签名（见安全模型）。
+
 `env.sh` 只是把 `NUGET_PACKAGES` 等指向仓库内部；在普通机器上可以不用。
 
 ## 发布
 
-交付二进制不进入 git 历史（`dist/SciBridge.exe` 和根目录的 `*.zip` 已在 `.gitignore` 中），
+交付二进制不进入 git 历史（`dist/SciBridge.exe` 已在 `.gitignore` 中），
 由 GitHub Actions 构建并附加到 Release：
 
 - 在 Actions 页面手动运行 **Release**，填入 tag（如 `v1.0.0`）；或
 - 推送 tag 触发：`git tag v1.0.0 && git push origin v1.0.0`
 
-工作流会交叉编译 `SciBridge.exe`、构建 Go 测试服务器，生成
-`SciBridge-<版本>-win11.zip`、同名独立 exe 和 `SHA256SUMS.txt`，
-并创建或更新对应的 GitHub Release。
+工作流只交叉编译 `SciBridge.exe`，生成
+`SciBridge-<版本>-win11.exe` 和 `SHA256SUMS.txt`，并创建或更新对应的
+GitHub Release。不再生成 zip，也不打包 skill、说明或测试服务器。
 
 ## 测试
 
@@ -175,7 +191,7 @@ python3 -m venv .venv && .venv/bin/pip install paramiko pyyaml
 .venv/bin/python tests/wine_selftest.py   # 14 项：Windows 测试服务器 + Windows 自检
 ```
 
-构建本机测试服务器（需要 Go；依赖已 vendored 在 `third_party/`，构建时不需要联网）：
+构建开发用的本机测试服务器（需要 Go；依赖已 vendored 在 `third_party/`，不随发布包分发）：
 
 ```bash
 export PATH=$PWD/.build/go/bin:$PATH GOFLAGS=-mod=mod GOPROXY=off GOSUMDB=off
@@ -202,7 +218,9 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -C tools/testserver \
 - 已知限制：
   - 勾选"允许跟随符号链接"后，符号链接**可以**指向可读根目录之外——这是用户显式选择的放宽。
   - 服务器端账号自身的权限不受本工具限制；本工具只是不提供任何写操作。
-  - 不做代码签名，首次运行可能出现 SmartScreen 提示（说明文档中已写明处理方式）。
+  - 不做代码签名，首次运行可能出现 SmartScreen 提示。
+  - 更新器不做代码签名，只依赖 GitHub HTTPS + Release 的 SHA-256 校验；如果发布账号
+    被攻破，校验值也可能被替换。这是当前接受的风险。
   - agent 必须运行在同一台 Windows 电脑上；不支持跨机或云端访问，也不提供隧道。
   - Codex 沙箱若禁止回环网络，需要用户授予本机网络访问权限；不要用关闭防火墙来绕过。
 
@@ -216,6 +234,8 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -C tools/testserver \
   密码认证路径已端到端验证；键盘交互因 paramiko 服务端限制未做自动化覆盖。
 - Codex 各版本的 Windows 沙箱是否放行本机回环网络；HTTP-only 已把失败模式
   收敛为"申请本机联网权限"，但仍建议在目标机器上用交接文字里的 `health` 做一次确认。
+- 内置更新器的真实 GitHub Release 下载/替换链路需要在 Windows 11 上做一次手工验收
+  （尤其关注杀软占用、只读目录和更新后重启）。
 
 GUI 版面不是靠肉眼确认的：`SciBridge.exe --dump-ui` 会在 Windows 运行时导出每个控件的
 真实坐标与尺寸，已验证所有控件都在客户区内、无零尺寸、无文字裁切。

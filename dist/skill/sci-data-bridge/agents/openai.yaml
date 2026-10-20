@@ -1,5 +1,0 @@
-interface:
-  display_name: "SciBridge 只读数据桥"
-  short_description: "通过本机 SciBridge 只读桥读取机构 SSH 服务器上的科研数据"
-  brand_color: "#1F6FEB"
-  default_prompt: "Use $sci-data-bridge to check the loopback HTTP bridge with health, then list the approved directory and summarize what data files are available."

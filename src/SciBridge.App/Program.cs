@@ -9,6 +9,14 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        // Hidden helper mode: the staged new exe waits for this process to exit,
+        // replaces the installed exe, and starts it again.
+        if (args.Length > 0 && args[0] == "--apply-update")
+        {
+            ReleaseConsoleWindow();
+            return UpdateApplier.Run(args);
+        }
+
         // Diagnostics: report the real laid-out geometry so the UI can be verified
         // without a human looking at it (used by the automated checks).
         if (args.Length > 0 && args[0] == "--dump-ui")
@@ -30,6 +38,8 @@ internal static class Program
 
         // No arguments: the user double-clicked the executable.
         ReleaseConsoleWindow();
+        UpdateApplier.CleanupBackupOnStartup();
+        UpdateService.CleanupOldUpdates();
         ApplicationConfiguration.Initialize();
 
         using var mutex = new Mutex(initiallyOwned: true, MutexName, out var isFirstInstance);
