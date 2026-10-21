@@ -64,6 +64,16 @@ public sealed class HealthDto
     [JsonPropertyName("readOnly")] public bool ReadOnly { get; set; } = true;
     [JsonPropertyName("rootReachable")] public bool RootReachable { get; set; }
     [JsonPropertyName("allowSymlinks")] public bool AllowSymlinks { get; set; }
+    [JsonPropertyName("allowUpload")] public bool AllowUpload { get; set; }
+    [JsonPropertyName("allowMkdir")] public bool AllowMkdir { get; set; }
     [JsonPropertyName("operations")] public List<string> Operations { get; set; } = new();
+    [JsonPropertyName("writeOperations")] public List<string> WriteOperations { get; set; } = new();
     [JsonPropertyName("transport")] public string Transport { get; set; } = "";
+}
+
+public sealed class WriteDto
+{
+    [JsonPropertyName("operation")] public string Operation { get; set; } = "";
+    [JsonPropertyName("path")] public string Path { get; set; } = "";
+    [JsonPropertyName("bytes")] public long Bytes { get; set; }
 }

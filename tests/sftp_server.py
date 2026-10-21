@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-A minimal, deliberately read-only SSH/SFTP server used to test SciBridge.
+A minimal SSH/SFTP server used to test SciBridge. Read-only by default; tests
+can explicitly enable the new-file/mkdir operations.
 
 It behaves like an institutional server for the parts that matter here:
   * password (and optionally keyboard-interactive) authentication
@@ -39,6 +40,7 @@ class ReadOnlySftpServer(paramiko.SFTPServerInterface):
     def __init__(self, server, *args, **kwargs):
         self.root = server.root
         self.log_path = server.log_path
+        self.allow_write = getattr(server, "allow_write", False)
         super().__init__(server, *args, **kwargs)
 
     # ---------------------------------------------------------------- paths
@@ -87,16 +89,35 @@ class ReadOnlySftpServer(paramiko.SFTPServerInterface):
 
     def stat(self, path):
         log_op(self.log_path, {"op": "stat", "path": path})
-        return paramiko.SFTPAttributes.from_stat(os.stat(self._real(path)))
+        try:
+            return paramiko.SFTPAttributes.from_stat(os.stat(self._real(path)))
+        except FileNotFoundError:
+            raise IOError(errno.ENOENT, "no such file")
 
     def lstat(self, path):
         log_op(self.log_path, {"op": "lstat", "path": path})
-        return paramiko.SFTPAttributes.from_stat(os.lstat(self._real(path)))
+        try:
+            return paramiko.SFTPAttributes.from_stat(os.lstat(self._real(path)))
+        except FileNotFoundError:
+            raise IOError(errno.ENOENT, "no such file")
 
     def open(self, path, flags, attr):
-        if flags & (os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC):
+        write_flags = flags & (os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC)
+        if write_flags:
             log_op(self.log_path, {"op": "WRITE_OPEN", "path": path, "flags": flags})
-            raise IOError(errno.EACCES, "this server is read-only")
+            if not self.allow_write:
+                raise IOError(errno.EACCES, "this server is read-only")
+            real = self._real(path)
+            mode = "ab" if flags & os.O_APPEND else "wb" if flags & os.O_TRUNC else "r+b"
+            try:
+                handle = paramiko.SFTPHandle(flags)
+                handle.filename = real
+                handle.writefile = open(real, mode)
+                if flags & os.O_RDWR:
+                    handle.readfile = open(real, "rb")
+                return handle
+            except OSError as exc:
+                raise IOError(exc.errno or errno.EACCES, str(exc))
         log_op(self.log_path, {"op": "open_read", "path": path})
         handle = paramiko.SFTPHandle(flags)
         handle.filename = self._real(path)
@@ -114,34 +135,62 @@ class ReadOnlySftpServer(paramiko.SFTPServerInterface):
         raise IOError(errno.EACCES, "this server is read-only (%s)" % op)
 
     def remove(self, path):
-        return self._refuse("remove", path)
+        log_op(self.log_path, {"op": "WRITE_REMOVE", "path": path})
+        if not self.allow_write:
+            raise IOError(errno.EACCES, "this server is read-only (remove)")
+        os.remove(self._real(path))
+        return paramiko.SFTP_OK
 
     def rename(self, oldpath, newpath):
-        return self._refuse("rename", oldpath)
+        log_op(self.log_path, {"op": "WRITE_RENAME", "old": oldpath, "new": newpath})
+        if not self.allow_write:
+            raise IOError(errno.EACCES, "this server is read-only (rename)")
+        os.rename(self._real(oldpath), self._real(newpath))
+        return paramiko.SFTP_OK
 
     def mkdir(self, path, attr):
-        return self._refuse("mkdir", path)
+        log_op(self.log_path, {"op": "WRITE_MKDIR", "path": path})
+        if not self.allow_write:
+            raise IOError(errno.EACCES, "this server is read-only (mkdir)")
+        os.mkdir(self._real(path))
+        return paramiko.SFTP_OK
 
     def rmdir(self, path):
-        return self._refuse("rmdir", path)
+        log_op(self.log_path, {"op": "WRITE_RMDIR", "path": path})
+        if not self.allow_write:
+            raise IOError(errno.EACCES, "this server is read-only (rmdir)")
+        os.rmdir(self._real(path))
+        return paramiko.SFTP_OK
 
     def chattr(self, path, attr):
-        return self._refuse("chattr", path)
+        log_op(self.log_path, {"op": "WRITE_CHATTR", "path": path})
+        if not self.allow_write:
+            raise IOError(errno.EACCES, "this server is read-only (chattr)")
+        return paramiko.SFTP_OK
 
     def symlink(self, target_path, path):
-        return self._refuse("symlink", path)
+        log_op(self.log_path, {"op": "WRITE_SYMLINK", "path": path})
+        if not self.allow_write:
+            raise IOError(errno.EACCES, "this server is read-only (symlink)")
+        os.symlink(self._real(target_path), self._real(path))
+        return paramiko.SFTP_OK
 
     def setstat(self, path, attr):
-        return self._refuse("setstat", path)
+        log_op(self.log_path, {"op": "WRITE_SETSTAT", "path": path})
+        if not self.allow_write:
+            raise IOError(errno.EACCES, "this server is read-only (setstat)")
+        return paramiko.SFTP_OK
 
 
 class AuthServer(paramiko.ServerInterface):
-    def __init__(self, root, log_path, user, password, allow_keyboard_interactive):
+    def __init__(self, root, log_path, user, password, allow_keyboard_interactive,
+                 allow_write=False):
         self.root = root
         self.log_path = log_path
         self.user = user
         self.password = password
         self.allow_keyboard_interactive = allow_keyboard_interactive
+        self.allow_write = allow_write
         self.pending_user = None
 
     def check_auth_password(self, username, password):
@@ -174,12 +223,12 @@ class AuthServer(paramiko.ServerInterface):
 
 
 def serve_connection(client_socket, host_key, root, log_path, user, password,
-                     allow_keyboard_interactive):
+                     allow_keyboard_interactive, allow_write):
     transport = paramiko.Transport(client_socket)
     transport.add_server_key(host_key)
     transport.set_subsystem_handler("sftp", paramiko.SFTPServer, ReadOnlySftpServer)
 
-    auth = AuthServer(root, log_path, user, password, allow_keyboard_interactive)
+    auth = AuthServer(root, log_path, user, password, allow_keyboard_interactive, allow_write)
     try:
         transport.start_server(server=auth)
     except Exception as exc:  # noqa: BLE001
@@ -193,7 +242,7 @@ def serve_connection(client_socket, host_key, root, log_path, user, password,
 
 
 def create_listener(root, user, password, log_path=None, port=0,
-                    keyboard_interactive=False, key_bits=2048):
+                    keyboard_interactive=False, key_bits=2048, allow_write=False):
     """Starts an in-process SFTP server. Returns (port, fingerprint, stop)."""
     host_key = paramiko.RSAKey.generate(key_bits)
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -217,7 +266,7 @@ def create_listener(root, user, password, log_path=None, port=0,
             threading.Thread(
                 target=serve_connection,
                 args=(client_socket, host_key, root, log_path, user, password,
-                      keyboard_interactive),
+                      keyboard_interactive, allow_write),
                 daemon=True,
             ).start()
 
@@ -241,6 +290,7 @@ def main():
     parser.add_argument("--password", required=True)
     parser.add_argument("--log")
     parser.add_argument("--keyboard-interactive", action="store_true")
+    parser.add_argument("--allow-write", action="store_true")
     parser.add_argument("--fingerprint-file")
     args = parser.parse_args()
 

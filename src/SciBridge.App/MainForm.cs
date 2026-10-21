@@ -15,9 +15,15 @@ internal sealed class MainForm : Form
     private readonly CheckBox _rememberBox = new();
     private readonly TextBox _rootBox = new();
     private readonly CheckBox _symlinkBox = new();
+    private readonly CheckBox _readBox = new();
+    private readonly CheckBox _writeBox = new();
+    private readonly CheckBox _uploadBox = new();
+    private readonly CheckBox _mkdirBox = new();
+    private readonly Label _writeWarning = new();
     private readonly Button _connectButton = new();
     private readonly Button _copyButton = new();
     private readonly Button _folderButton = new();
+    private readonly Button _auditButton = new();
     private readonly Label _statusLabel = new();
     private readonly Label _versionLabel = new();
     private readonly LinkLabel _repoLink = new();
@@ -121,6 +127,42 @@ internal sealed class MainForm : Form
         _symlinkBox.AutoSize = true;
         AddFullWidthRow(fields, _symlinkBox);
 
+        _readBox.Text = "允许读取（始终开启）";
+        _readBox.AutoSize = true;
+        _readBox.Checked = true;
+        _readBox.Enabled = false;
+        AddFullWidthRow(fields, _readBox);
+
+        _writeBox.Text = "允许写入（仅新建文件/目录，不能覆盖或删除）";
+        _writeBox.AutoSize = true;
+        _writeBox.CheckedChanged += (_, _) => UpdateWriteOptions();
+        AddFullWidthRow(fields, _writeBox);
+
+        var writeOptions = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            WrapContents = false,
+            Margin = new Padding(3, 2, 3, 8),
+        };
+        _uploadBox.Text = "上传新文件";
+        _uploadBox.AutoSize = true;
+        _uploadBox.Checked = true;
+        _uploadBox.Enabled = false;
+        _mkdirBox.Text = "创建目录";
+        _mkdirBox.AutoSize = true;
+        _mkdirBox.Checked = true;
+        _mkdirBox.Enabled = false;
+        writeOptions.Controls.Add(_uploadBox);
+        writeOptions.Controls.Add(_mkdirBox);
+        AddFullWidthRow(fields, writeOptions);
+
+        _writeWarning.AutoSize = true;
+        _writeWarning.MaximumSize = new Size(600, 0);
+        _writeWarning.ForeColor = Color.Firebrick;
+        _writeWarning.Text = "风险：写权限会让 Codex 在服务器上新建文件和目录；本版本不能覆盖、重命名或删除。";
+        _writeWarning.Visible = false;
+        AddFullWidthRow(fields, _writeWarning);
+
         root.Controls.Add(fields, 0, 1);
 
         // ---- buttons
@@ -150,6 +192,12 @@ internal sealed class MainForm : Form
         _folderButton.Padding = new Padding(10, 4, 10, 4);
         _folderButton.Click += (_, _) => OpenDataFolder();
         buttons.Controls.Add(_folderButton);
+
+        _auditButton.Text = "打开审计日志";
+        _auditButton.AutoSize = true;
+        _auditButton.Padding = new Padding(10, 4, 10, 4);
+        _auditButton.Click += (_, _) => OpenAuditFolder();
+        buttons.Controls.Add(_auditButton);
 
         root.Controls.Add(buttons, 0, 2);
 
@@ -209,6 +257,8 @@ internal sealed class MainForm : Form
         var tips = new ToolTip();
         tips.SetToolTip(_rootBox, "例如 . 或 data/2024。Codex 无法访问这个目录之外的内容。");
         tips.SetToolTip(_symlinkBox, "符号链接可能指向可读根目录之外。默认不跟随更安全。");
+        tips.SetToolTip(_writeBox, "只允许新建文件/目录；不会覆盖、重命名或删除服务器上的任何内容。");
+        tips.SetToolTip(_writeWarning, "写操作会记录在审计日志中。");
         tips.SetToolTip(_versionLabel, "版本来自构建时的 release tag；本地非发布构建显示 0.0.0-dev。");
         if (!string.IsNullOrWhiteSpace(BuildInfo.RepositoryUrl))
             tips.SetToolTip(_repoLink, BuildInfo.RepositoryUrl);
@@ -257,7 +307,11 @@ internal sealed class MainForm : Form
         _userBox.Text = _settings.User;
         _rootBox.Text = string.IsNullOrWhiteSpace(_settings.Root) ? "." : _settings.Root;
         _symlinkBox.Checked = _settings.AllowSymlinks;
+        _writeBox.Checked = _settings.AllowWrite;
+        _uploadBox.Checked = _settings.AllowUpload;
+        _mkdirBox.Checked = _settings.AllowMkdir;
         _rememberBox.Checked = _settings.RememberPassword;
+        UpdateWriteOptions();
 
         if (_settings.RememberPassword)
         {
@@ -273,9 +327,37 @@ internal sealed class MainForm : Form
         _settings.User = _userBox.Text.Trim();
         _settings.Root = string.IsNullOrWhiteSpace(_rootBox.Text) ? "." : _rootBox.Text.Trim();
         _settings.AllowSymlinks = _symlinkBox.Checked;
+        _settings.AllowWrite = _writeBox.Checked;
+        _settings.AllowUpload = _uploadBox.Checked;
+        _settings.AllowMkdir = _mkdirBox.Checked;
         _settings.RememberPassword = _rememberBox.Checked;
         _settings.PasswordBlob = _rememberBox.Checked ? SecretStore.Protect(_passwordBox.Text) : "";
         _settings.Save();
+    }
+
+    private void UpdateWriteOptions()
+    {
+        var enabled = _writeBox.Checked;
+        _uploadBox.Enabled = enabled;
+        _mkdirBox.Enabled = enabled;
+        _writeWarning.Visible = enabled;
+    }
+
+    private void OpenAuditFolder()
+    {
+        try
+        {
+            Directory.CreateDirectory(AppPaths.AuditDir);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = AppPaths.AuditDir,
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            Dialogs.Error(this, "无法打开审计日志目录：" + ex.Message, "打开失败");
+        }
     }
 
     private void OpenDataFolder()
@@ -320,9 +402,26 @@ internal sealed class MainForm : Form
             return;
         }
 
+        var allowWrite = _writeBox.Checked;
+        var allowUpload = allowWrite && _uploadBox.Checked;
+        var allowMkdir = allowWrite && _mkdirBox.Checked;
+        if (allowWrite && !allowUpload && !allowMkdir)
+        {
+            Warn("已勾选“允许写入”，但请至少选择“上传新文件”或“创建目录”。", _uploadBox);
+            return;
+        }
+        if (allowWrite && !Dialogs.Confirm(this,
+                "将允许 Codex 在服务器上新建文件和目录。\n\n" +
+                "本版本不能覆盖、重命名或删除任何已有内容；所有操作会记录到审计日志。\n\n" +
+                "确定开启写权限吗？", "确认开启写入"))
+        {
+            return;
+        }
+
         SaveSettingsFromFields();
 
-        var request = new ConnectRequest(host, port, user, password, root, _symlinkBox.Checked);
+        var request = new ConnectRequest(host, port, user, password, root, _symlinkBox.Checked,
+            allowUpload, allowMkdir);
 
         SetBusy(true);
         SetStatus("正在连接并验证服务器身份…");
@@ -333,7 +432,7 @@ internal sealed class MainForm : Form
             try
             {
                 var fs = SshConnector.Connect(request, _hostKeys, new UiInteraction(this));
-                var bridge = BridgeHost.Start(fs, host, port, user);
+                var bridge = BridgeHost.Start(fs, host, port, user, allowUpload, allowMkdir);
                 PostToUi(() => OnConnected(bridge));
             }
             catch (Exception ex)
@@ -362,7 +461,8 @@ internal sealed class MainForm : Form
             ? "账号主目录"
             : bridge.Session.Root;
 
-        SetStatus($"已连接（只读）：{bridge.Session.User}@{bridge.Session.Host}:{bridge.Session.Port}　" +
+        var mode = bridge.Session.AllowUpload || bridge.Session.AllowMkdir ? "读写，仅新建" : "只读";
+        SetStatus($"已连接（{mode}）：{bridge.Session.User}@{bridge.Session.Host}:{bridge.Session.Port}　" +
                   $"可读范围：{scopeText}。把下面的交接文字发给 Codex 即可开始。关闭窗口会断开连接。");
 
         _handoffBox.Text = HandoffText.Generate(bridge.Session);
@@ -371,7 +471,7 @@ internal sealed class MainForm : Form
 
         Dialogs.CopyToClipboard(this, _handoffBox.Text);
         Dialogs.Info(this,
-            "已连接（只读）。\n\n" +
+            $"已连接（{mode}）。\n\n" +
             "交接文字已经复制到剪贴板，直接粘贴到 Codex 的对话里即可。\n" +
             "里面有本机 HTTP 地址和短期令牌：只在这台电脑上有效，不要外发。\n\n" +
             "如果之后还想再复制一次，点窗口里的“复制交接文字”。\n" +
@@ -426,6 +526,9 @@ internal sealed class MainForm : Form
         _rememberBox.Enabled = enabled;
         _rootBox.Enabled = enabled;
         _symlinkBox.Enabled = enabled;
+        _writeBox.Enabled = enabled;
+        _uploadBox.Enabled = enabled && _writeBox.Checked;
+        _mkdirBox.Enabled = enabled && _writeBox.Checked;
     }
 
     private void SetStatus(string text) => _statusLabel.Text = text;

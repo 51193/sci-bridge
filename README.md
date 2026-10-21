@@ -1,8 +1,8 @@
-# SciBridge — 机构服务器只读数据桥
+# SciBridge — 机构服务器科研数据桥（默认只读）
 
-给 Codex（或其它本机 agent）用的**只读**科研数据通道。用户双击一个自包含 exe，
-填入服务器地址、端口、账号、密码和可读根目录，程序在本机回环上开一个只读 HTTP
-接口，并把一段"交接文字"直接送到剪贴板。把这段文字粘进 Codex，就可以开始读数据。
+给 Codex（或其它本机 agent）用的科研数据通道。默认**只读**；用户可以在连接前
+按需开启“仅新建文件/目录”的写权限。程序在本机回环上开 HTTP 接口，并把一段
+"交接文字"直接送到剪贴板，粘进 Codex 即可开始。
 
 **目标平台：Windows 11 x64。交付物是单个自包含 exe，除 Windows 自身组件外无任何依赖。**
 
@@ -13,6 +13,9 @@
 1. 把 `SciBridge.exe` 放到一个固定文件夹。
 2. 双击，填服务器信息，点"连接"。
 3. 交接文字会自动复制；粘进 Codex 即可。文字里有本机 HTTP 地址和短期令牌。
+
+默认只读。需要让 agent 新建文件或目录时，在连接前勾选“允许写入”及对应子项；
+本版本**不能覆盖、重命名或删除**服务器上的任何内容。
 
 程序不附带 skill、独立说明文档或测试服务器；使用说明就在窗口和交接文字里。
 
@@ -33,7 +36,8 @@ HTTP 路线不需要执行 exe、不需要读文件，只需要 `curl.exe`（系
 
 - 交接文字直接给出 `http://127.0.0.1:<port>/<token>/`；
 - 不写 `session.json`，没有命名管道，没有面向 agent 的 CLI；
-- `SciBridge.exe` 只负责 GUI 和可选的自检，不再被 Codex 调用。
+- `SciBridge.exe` 只负责 GUI 和可选的自检，不再被 Codex 调用；
+- 写能力同样只走这个 HTTP 接口，且仅限新建文件/目录。
 
 Codex 的沙箱仍可能禁止子进程访问回环网络（表现为 `EACCES` / 连接被拒）。
 交接文字会提示 agent：**向用户申请“允许本机网络访问”**，不要关闭防火墙。
@@ -48,11 +52,11 @@ Codex 的沙箱仍可能禁止子进程访问回环网络（表现为 `EACCES` /
 | 安装期必须联网访问 PyPI | **运行期完全不需要联网**（除连接服务器本身） |
 | venv + 原生 wheel 易碎、icacls 改 ACL | 无安装过程，无 ACL 改动 |
 | agent 必须自己"猜"安装目录 | 交接文字直接给本机 HTTP 地址，不需要找 exe |
-| 要求 agent 读 `session.json` 却不许打印令牌 | 不落盘会话；令牌直接在交接文字里，但只对本机只读有效 |
+| 要求 agent 读 `session.json` 却不许打印令牌 | 不落盘会话；令牌直接在交接文字里，本机有效、默认只读 |
 | GUI 不能改 IP / 账号（只有端口和密码可改） | 地址、端口、账号、密码、**可读根目录**全部可填 |
 | 主机公钥写死在某台服务器 | TOFU + 指纹确认 + 本地固定；变化时硬停并给指引 |
-| 没有访问范围限制 | 三层只读保证 + 可读根目录约束 + 符号链接默认不跟随 |
-| ZIP + 安装器 + 快捷方式 + 5 页 PDF | 一个 exe；不附带 skill/说明/测试服务器 |
+| 没有访问范围限制 | 默认只读 + 根目录约束 + 符号链接默认不跟随；写仅限新建 |
+| ZIP + 安装器 + 快捷方式 + 5 页 PDF | 一个 exe；不附带 skill/说明/测试服务器；默认只读 |
 
 ---
 
@@ -62,11 +66,12 @@ Codex 的沙箱仍可能禁止子进程访问回环网络（表现为 `EACCES` /
 src/
 ├─ SciBridge.Core/          跨平台核心库（net10.0），不含任何 Windows 专属代码
 │   ├─ SshConnector.cs      SSH 连接、TOFU 主机公钥、键盘交互（2FA）
-│   ├─ RemoteFs.cs          只读文件操作 + 根目录约束 + find 上限
+│   ├─ RemoteFs.cs          只读操作 + 新建文件/目录 + 根目录约束
 │   ├─ PathGuard.cs         路径规范化与越界拒绝
-│   ├─ BridgeService.cs     五个操作的唯一分发点（health 会真实探测 root）
+│   ├─ BridgeService.cs     读写操作分发、权限检查与审计
 │   ├─ HttpBridgeServer.cs  手写最小 HTTP/1.1，只绑 127.0.0.1
 │   ├─ BridgeHost.cs        组装 HTTP 服务 + 内存会话
+│   ├─ AuditLog.cs          每次连接一份时间戳命名的操作日志
 │   ├─ BridgeClient.cs      内部 HTTP 客户端（自检用，不面向 agent）
 │   ├─ HandoffText.cs       生成交接文字（URL + 令牌 + curl 示例）
 │   ├─ TextRenderer.cs      文本输出（ls -l 风格）
@@ -89,9 +94,9 @@ src/
 
 tools/testserver/          仅开发测试用的本机测试服务器；不随发布包分发
 tests/
-├─ sftp_server.py           基于 paramiko 的真实 SSH/SFTP 服务端（只读、记录所有请求）
+├─ sftp_server.py           基于 paramiko 的真实 SSH/SFTP 服务端（默认只读，可测试写、记录所有请求）
 ├─ bridge_client.py         测试共享的 HTTP 客户端/Bridge 进程辅助
-├─ e2e.py                   55 项端到端断言（真实 SSH 服务端 + 真实 HTTP 接口）
+├─ e2e.py                   77 项端到端断言（真实 SSH 服务端 + 真实 HTTP 接口）
 ├─ go_server_check.py       20 项断言：验证 Go 测试服务器是合格的替身
 ├─ wine_check.py            8 项：用 Wine 验证交付的 Windows exe（自检/HTTP 路径）
 └─ wine_selftest.py         14 项断言：Windows 测试服务器 + Windows SciBridge 全链路
@@ -104,9 +109,14 @@ tools/make_icon.py          生成 app.ico（纯标准库，附 ASCII 预览）
 - **HTTP 是 agent 的唯一接口**。没有 CLI、命名管道或会话文件需要沙箱去读/执行。
 - **HTTP 服务手写在 `TcpListener` 上**，不用 `HttpListener`：后者在 Windows 上需要
   管理员 URL ACL 预留，会直接毁掉"双击即用"。
-- **令牌放进交接文字**。它是本机回环、只读、会话级的能力凭证；关闭窗口即失效。
+- **令牌放进交接文字**。它是本机回环、会话级的能力凭证；默认只读，开启写后仅多出新建权；关闭窗口即失效。
   代价是令牌会进入对话上下文，因此交接文字明确要求不要外发、不要截图。
 - **不落盘 session**。GUI 只在内存里保存 URL/令牌；没有 agent 可读的会话文件。
+- **写能力默认关闭且只做加法**。勾选后仅允许上传新文件、创建一级目录；没有覆盖、
+  重命名、删除、chmod 或远程命令执行。写路径仍受读根目录和符号链接策略约束。
+- **审计日志**。每次连接在 `%LOCALAPPDATA%\SciBridge\audit` 生成
+  `audit-<时间戳>-<pid>.log`，记录操作、路径、字节数、成功/失败；不记录令牌、
+  密码或文件内容。GUI 的“打开审计日志”可随时查看。
 - **exe 是控制台子系统（不是 WinExe）**，`--self-test` / `--version` 仍能被
   cmd/PowerShell 等待并捕获输出。GUI 模式启动时调用 `FreeConsole()`：双击产生的
   控制台/pwsh 窗口会被关闭；从已有 cmd/PowerShell 启动时只脱离控制台，不会把
@@ -119,17 +129,25 @@ tools/make_icon.py          生成 app.ico（纯标准库，附 ASCII 预览）
 
 ---
 
-## 只读的三层保证
+## 读写边界
 
-1. **协议层**：`BridgeService` 只分发 `health / list / stat / read / find`。
+1. **默认只读**：不勾选写权限时，协议层只接受 `health / list / stat / read / find`，
    代码中不存在任何写入、删除、改名、chmod 或远程命令执行的调用点。
-   `health` 额外做一次 `stat(".")`，所以它能反映 SSH/root 是否真的可用。
-2. **调用层**：`RemoteFs` 只使用 SSH.NET 的 `ListDirectory` / `GetAttributes` /
-   `OpenRead`，没有任何写路径。
-3. **范围层**：所有路径先经 `PathGuard` 规范化，限制在用户设定的"可读根目录"内；
+2. **写只做加法**：开启后仅新增 `PUT /upload`（新文件）和 `POST /mkdir`（一级新目录）。
+   覆盖已有文件、重命名、删除、chmod、远程执行都不存在；目标已存在时直接拒绝。
+3. **范围层**：所有路径先经 `PathGuard` 规范化，限制在用户设定的根目录内；
    `..` 越界、盘符与前缀一律拒绝。由于 SSH.NET 的 `GetAttributes` 实际发送的是
    **LSTAT**，属性不会跟随符号链接，因此"检查但不跟随符号链接"的策略可以被可靠执行；
-   中间路径上的符号链接默认直接拒绝。
+   中间路径上的符号链接默认直接拒绝。上传先写临时文件，成功后 rename，失败清理。
+
+写接口（仅当用户勾选对应权限）：
+
+```text
+PUT  /<token>/upload?path=<新文件路径>    body=原始字节（上限 64 MiB，不覆盖）
+POST /<token>/mkdir?path=<新目录>         父目录必须已存在
+```
+
+目标已存在、路径越界、父目录是符号链接等情况一律返回 400。
 
 ---
 
@@ -187,7 +205,7 @@ GitHub Release。不再生成 zip，也不打包 skill、说明或测试服务�
 ```bash
 python3 -m venv .venv && .venv/bin/pip install paramiko pyyaml
 
-.venv/bin/python tests/e2e.py             # 55 项：真实 SSH 服务端 + 真实 HTTP
+.venv/bin/python tests/e2e.py             # 77 项：真实 SSH 服务端 + 真实 HTTP
 .venv/bin/python tests/go_server_check.py # 20 项：Go 测试服务器是否合格
 .venv/bin/python tests/wine_check.py      # 8 项：交付的 Windows exe（自检/HTTP 路径）
 .venv/bin/python tests/wine_selftest.py   # 14 项：Windows 测试服务器 + Windows 自检
@@ -204,7 +222,8 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -C tools/testserver \
 `tests/e2e.py` 覆盖：认证与指纹固定、错误密码只尝试一次、health 的真实探测、
 文本与二进制读取的字节一致性、分段读取、Unicode 路径、find 深度与上限、
 越界与符号链接逃逸拒绝、HTTP 令牌/GET-only/浏览器来源拒绝、交接文字含 URL/令牌、
-无写入审计，以及"桥关闭后 HTTP 连接失败"。
+只读默认拒绝写入、写权限下的新文件/目录、不可覆盖、路径/符号链接约束、审计日志，
+以及"桥关闭后 HTTP 连接失败"。
 
 ---
 
@@ -212,14 +231,16 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -C tools/testserver \
 
 - 密码只在用户本机输入，**不会**进入 agent 的对话上下文；
   默认不落盘；勾选"记住密码"后用 Windows DPAPI（当前用户作用域）加密保存。
-- 令牌是**本机回环、只读、会话级**的能力凭证，进程退出即失效。
+- 令牌是**本机回环、会话级**的能力凭证，进程退出即失效；默认只读，开启写后仅多出新建权。
 - 令牌现在会出现在交接文字里（否则 HTTP-only 无法工作）；请勿外发、截图或写进仓库。
+- 开启写权限后，这个令牌同时具备**新建文件/目录**的能力；仍不能覆盖、删除或执行命令。
 - 接口只绑定 `127.0.0.1`，不触发 Windows 防火墙弹窗，局域网无法访问。
 - 带 `Origin`/`Referer`/`Sec-Fetch-*` 的请求一律 403，防止网页借浏览器探测。
 - 不写 `session.json`；没有命名管道；agent 不需要读取任何本机文件。
 - 已知限制：
   - 勾选"允许跟随符号链接"后，符号链接**可以**指向可读根目录之外——这是用户显式选择的放宽。
   - 服务器端账号自身的权限不受本工具限制；本工具只是不提供任何写操作。
+  - 写权限只允许新增文件和一级目录；目标已存在会被拒绝，但仍可能占用服务器磁盘空间。
   - 不做代码签名，首次运行可能出现 SmartScreen 提示。
   - 更新器不做代码签名，只依赖 GitHub HTTPS + Release 的 SHA-256 校验；如果发布账号
     被攻破，校验值也可能被替换。这是当前接受的风险。

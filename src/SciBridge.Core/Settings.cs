@@ -15,6 +15,12 @@ public sealed class Settings
     public string User { get; set; } = "";
     public string Root { get; set; } = ".";
     public bool AllowSymlinks { get; set; }
+    /// <summary>Master switch for agent write operations; off by default.</summary>
+    public bool AllowWrite { get; set; }
+    /// <summary>Upload new files (never overwrite); only meaningful when AllowWrite is true.</summary>
+    public bool AllowUpload { get; set; } = true;
+    /// <summary>Create directories; only meaningful when AllowWrite is true.</summary>
+    public bool AllowMkdir { get; set; } = true;
     public bool RememberPassword { get; set; }
 
     /// <summary>Base64 DPAPI blob, or empty. Never a plaintext password.</summary>

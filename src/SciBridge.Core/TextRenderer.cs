@@ -49,12 +49,21 @@ public static class TextRenderer
                 sb.AppendLine("user: " + health.User);
                 sb.AppendLine("root: " + health.Root);
                 sb.AppendLine("home: " + health.Home);
-                sb.AppendLine("readOnly: true");
+                sb.AppendLine("readOnly: " + (health.ReadOnly ? "true" : "false"));
                 sb.AppendLine("rootReachable: " + (health.RootReachable ? "true" : "false"));
                 sb.AppendLine("allowSymlinks: " + (health.AllowSymlinks ? "true" : "false"));
+                sb.AppendLine("allowUpload: " + (health.AllowUpload ? "true" : "false"));
+                sb.AppendLine("allowMkdir: " + (health.AllowMkdir ? "true" : "false"));
                 sb.AppendLine("operations: " + string.Join(", ", health.Operations));
+                if (health.WriteOperations.Count > 0)
+                    sb.AppendLine("writeOperations: " + string.Join(", ", health.WriteOperations));
                 return sb.ToString().TrimEnd('\n');
             }
+
+            case BridgeResult.Payload { Dto: WriteDto write }:
+                return write.Operation == "upload"
+                    ? $"uploaded: {write.Path} ({write.Bytes} bytes)"
+                    : $"created: {write.Path}";
 
             case BridgeResult.Raw raw:
             {

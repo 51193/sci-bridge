@@ -8,12 +8,16 @@ namespace SciBridge;
 
 /// <summary>
 /// A deliberately small HTTP/1.1 server bound to 127.0.0.1 only.
+/// GET serves reads; PUT /upload and POST /mkdir exist only when the user
+/// explicitly enabled those write capabilities for this session.
 /// HttpListener is avoided on purpose: it needs an http.sys URL reservation
 /// (administrator rights) on Windows, which would wreck one-click deployment.
 /// </summary>
 public sealed class HttpBridgeServer : IDisposable
 {
     private const int MaxHeaderBytes = 16 * 1024;
+    /// <summary>Naive upload cap; large datasets are intentionally out of scope.</summary>
+    public const long MaxUploadBytes = 64L * 1024 * 1024;
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = false };
 
     private readonly TcpListener _listener;
@@ -62,7 +66,9 @@ public sealed class HttpBridgeServer : IDisposable
             {
                 client.NoDelay = true;
                 using var stream = client.GetStream();
-                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+                // Uploads are capped at 64 MiB; keep the request alive long
+                // enough for a slow but legitimate link.
+                using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
                 var ct = timeout.Token;
 
                 var head = await ReadHeadAsync(stream, ct).ConfigureAwait(false);
@@ -82,6 +88,13 @@ public sealed class HttpBridgeServer : IDisposable
                 var method = requestLine[0];
                 var target = requestLine[1];
 
+                if (method is not ("GET" or "PUT" or "POST"))
+                {
+                    await WriteAsync(stream, 405, "text/plain; charset=utf-8",
+                        Encoding.UTF8.GetBytes("error: 只支持 GET、PUT、POST。\n"), ct).ConfigureAwait(false);
+                    return;
+                }
+
                 var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 for (var i = 1; i < lines.Length; i++)
                 {
@@ -90,15 +103,8 @@ public sealed class HttpBridgeServer : IDisposable
                     headers[lines[i][..idx].Trim()] = lines[i][(idx + 1)..].Trim();
                 }
 
-                if (!string.Equals(method, "GET", StringComparison.Ordinal))
-                {
-                    await WriteAsync(stream, 405, "text/plain; charset=utf-8",
-                        Encoding.UTF8.GetBytes("error: 只支持 GET。本工具是只读的。\n"), ct).ConfigureAwait(false);
-                    return;
-                }
-
                 // Reject anything a web page could have triggered, so a malicious site
-                // cannot use the user's browser to probe the bridge.
+                // cannot use the user's browser to probe or write through the bridge.
                 if (headers.ContainsKey("Origin") || headers.ContainsKey("Referer") ||
                     headers.ContainsKey("Sec-Fetch-Mode") || headers.ContainsKey("Sec-Fetch-Site"))
                 {
@@ -130,16 +136,108 @@ public sealed class HttpBridgeServer : IDisposable
 
                 var query = ParseQuery(queryPart);
                 var operation = segments[1].ToLowerInvariant();
+                var path = query.GetValueOrDefault("path", ".");
+                var format = query.GetValueOrDefault("format", operation == "read" ? "raw" : "text");
+
+                if (method == "PUT")
+                {
+                    if (operation != "upload")
+                    {
+                        await WriteAsync(stream, 400, "text/plain; charset=utf-8",
+                            Encoding.UTF8.GetBytes("error: PUT 只用于 /upload。\n"), ct).ConfigureAwait(false);
+                        return;
+                    }
+                    if (!_service.CanUpload)
+                    {
+                        await WriteAsync(stream, 403, "text/plain; charset=utf-8",
+                            Encoding.UTF8.GetBytes("error: 写入未开启。请让用户勾选“允许写入 → 上传新文件”后重连。\n"), ct)
+                            .ConfigureAwait(false);
+                        return;
+                    }
+
+                    if (!headers.TryGetValue("Content-Length", out var lengthText) ||
+                        !long.TryParse(lengthText, out var contentLength))
+                    {
+                        await WriteAsync(stream, 411, "text/plain; charset=utf-8",
+                            Encoding.UTF8.GetBytes("error: 上传必须提供 Content-Length。\n"), ct).ConfigureAwait(false);
+                        return;
+                    }
+                    if (contentLength < 0 || contentLength > MaxUploadBytes)
+                    {
+                        await WriteAsync(stream, 413, "text/plain; charset=utf-8",
+                            Encoding.UTF8.GetBytes($"error: 上传大小超过上限（{MaxUploadBytes} 字节）。\n"), ct)
+                            .ConfigureAwait(false);
+                        return;
+                    }
+
+                    if (headers.TryGetValue("Expect", out var expect) &&
+                        expect.Contains("100-continue", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var interim = Encoding.ASCII.GetBytes("HTTP/1.1 100 Continue\r\n\r\n");
+                        await stream.WriteAsync(interim, ct).ConfigureAwait(false);
+                        await stream.FlushAsync(ct).ConfigureAwait(false);
+                    }
+
+                    var body = await ReadBodyAsync(stream, (int)contentLength, ct).ConfigureAwait(false);
+                    if (body is null)
+                    {
+                        await WriteAsync(stream, 400, "text/plain; charset=utf-8",
+                            Encoding.UTF8.GetBytes("error: 上传数据不完整。\n"), ct).ConfigureAwait(false);
+                        return;
+                    }
+
+                    var uploadResult = _service.Upload(path, body);
+                    await RespondAsync(stream, uploadResult,
+                        new BridgeRequest("upload", path, Format: format), ct).ConfigureAwait(false);
+                    return;
+                }
+
+                if (method == "POST")
+                {
+                    if (operation != "mkdir")
+                    {
+                        await WriteAsync(stream, 400, "text/plain; charset=utf-8",
+                            Encoding.UTF8.GetBytes("error: POST 只用于 /mkdir。\n"), ct).ConfigureAwait(false);
+                        return;
+                    }
+                    if (!_service.CanMkdir)
+                    {
+                        await WriteAsync(stream, 403, "text/plain; charset=utf-8",
+                            Encoding.UTF8.GetBytes("error: 写入未开启。请让用户勾选“允许写入 → 创建目录”后重连。\n"), ct)
+                            .ConfigureAwait(false);
+                        return;
+                    }
+                    if (headers.TryGetValue("Content-Length", out var mkdirLength) &&
+                        long.TryParse(mkdirLength, out var mkdirBytes) && mkdirBytes > 0)
+                    {
+                        await WriteAsync(stream, 400, "text/plain; charset=utf-8",
+                            Encoding.UTF8.GetBytes("error: /mkdir 不接受请求体。\n"), ct).ConfigureAwait(false);
+                        return;
+                    }
+
+                    var mkdirResult = _service.Mkdir(path);
+                    await RespondAsync(stream, mkdirResult,
+                        new BridgeRequest("mkdir", path, Format: format), ct).ConfigureAwait(false);
+                    return;
+                }
+
+                if (operation is "upload" or "mkdir")
+                {
+                    await WriteAsync(stream, 405, "text/plain; charset=utf-8",
+                        Encoding.UTF8.GetBytes("error: /upload 使用 PUT，/mkdir 使用 POST。\n"), ct).ConfigureAwait(false);
+                    return;
+                }
+
                 var request = new BridgeRequest(
                     Op: operation,
-                    Path: query.GetValueOrDefault("path", "."),
+                    Path: path,
                     Offset: ParseLong(query.GetValueOrDefault("offset"), 0),
                     Length: ParseInt(query.GetValueOrDefault("length"), 0),
                     Glob: query.GetValueOrDefault("glob"),
                     Max: ParseInt(query.GetValueOrDefault("max"), 0),
                     Depth: ParseInt(query.GetValueOrDefault("depth"), 0),
                     // A raw read must never be text-decoded by default: that would corrupt binary data.
-                    Format: query.GetValueOrDefault("format", operation == "read" ? "raw" : "text"));
+                    Format: format);
 
                 var result = _service.Execute(request);
                 await RespondAsync(stream, result, request, ct).ConfigureAwait(false);
@@ -149,6 +247,23 @@ public sealed class HttpBridgeServer : IDisposable
                 Log.Write("http handler failed: " + ex.Message);
             }
         }
+    }
+
+    private static async Task<byte[]?> ReadBodyAsync(
+        NetworkStream stream, int length, CancellationToken ct)
+    {
+        if (length == 0) return Array.Empty<byte>();
+
+        var buffer = new byte[length];
+        var total = 0;
+        while (total < length)
+        {
+            var read = await stream.ReadAsync(buffer.AsMemory(total, length - total), ct)
+                .ConfigureAwait(false);
+            if (read == 0) return null;
+            total += read;
+        }
+        return buffer;
     }
 
     private static async Task RespondAsync(
@@ -248,6 +363,8 @@ public sealed class HttpBridgeServer : IDisposable
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        411 => "Length Required",
+        413 => "Payload Too Large",
         _ => "Error",
     };
 

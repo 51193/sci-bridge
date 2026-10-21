@@ -27,6 +27,10 @@ public sealed class SessionInfo
     public string AppVersion { get; set; } = BuildInfo.Version;
     public string CreatedUtc { get; set; } = "";
     public bool AllowSymlinks { get; set; }
+    /// <summary>Upload new files (never overwrite).</summary>
+    public bool AllowUpload { get; set; }
+    /// <summary>Create directories.</summary>
+    public bool AllowMkdir { get; set; }
 
     private static readonly JsonSerializerOptions Options = new()
     {

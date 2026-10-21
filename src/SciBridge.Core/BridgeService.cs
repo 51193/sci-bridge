@@ -1,6 +1,6 @@
 namespace SciBridge;
 
-/// <summary>A transport-independent request for one read-only operation.</summary>
+/// <summary>A transport-independent request for one operation.</summary>
 public sealed record BridgeRequest(
     string Op,
     string Path = ".",
@@ -19,31 +19,37 @@ public abstract record BridgeResult
 }
 
 /// <summary>
-/// Dispatches the five read-only operations. This is the only place that turns a
-/// request into remote work, so the read-only surface is auditable in one screen.
+/// Dispatches every read and (when enabled) write operation. This is the only
+/// place that turns a request into remote work, so the surface stays auditable.
+/// Write capability is deliberately limited to new files and new directories;
+/// there is no overwrite, rename, delete or remote-exec operation.
 /// </summary>
 public sealed class BridgeService
 {
-    private static readonly string[] OperationNames = { "health", "list", "stat", "read", "find" };
+    private static readonly string[] ReadOperationNames = { "health", "list", "stat", "read", "find" };
 
     private readonly RemoteFs _fs;
     private readonly SessionInfo _session;
+    private readonly AuditLog _audit;
     private readonly SemaphoreSlim _concurrency = new(4, 4);
 
-    public BridgeService(RemoteFs fs, SessionInfo session)
+    public BridgeService(RemoteFs fs, SessionInfo session, AuditLog audit)
     {
         _fs = fs;
         _session = session;
+        _audit = audit;
     }
 
     public RemoteFs FileSystem => _fs;
+    public bool CanUpload => _session.AllowUpload;
+    public bool CanMkdir => _session.AllowMkdir;
 
     public BridgeResult Execute(BridgeRequest request)
     {
         _concurrency.Wait();
         try
         {
-            return request.Op switch
+            BridgeResult result = request.Op switch
             {
                 "health" => new BridgeResult.Payload(Health()),
                 "list" => new BridgeResult.Payload(_fs.List(request.Path, request.Max)),
@@ -54,17 +60,23 @@ public sealed class BridgeService
                     AsBase64: request.Format == "b64" || request.Format == "json",
                     AsText: request.Format == "text"),
                 _ => new BridgeResult.Failure(
-                    $"不支持的操作 '{request.Op}'。本工具只提供只读操作：{string.Join(", ", OperationNames)}。"),
+                    $"不支持的操作 '{request.Op}'。支持：{string.Join(", ", SupportedOperations())}。"),
             };
+
+            _audit.Write(request.Op, AuditTarget(request), Summary(result));
+            return result;
         }
         catch (BridgeException ex)
         {
+            _audit.Write(request.Op, AuditTarget(request), "error=" + ex.Message);
             return new BridgeResult.Failure(ex.Message);
         }
         catch (Exception ex)
         {
             Log.Write($"op={request.Op} path={request.Path} failed: {ex}");
-            return new BridgeResult.Failure(FriendlyFailure(ex));
+            var message = FriendlyFailure(ex);
+            _audit.Write(request.Op, AuditTarget(request), "error=" + message);
+            return new BridgeResult.Failure(message);
         }
         finally
         {
@@ -72,14 +84,119 @@ public sealed class BridgeService
         }
     }
 
+    /// <summary>Uploads a brand-new file; existing files are never overwritten.</summary>
+    public BridgeResult Upload(string path, byte[] data)
+    {
+        _concurrency.Wait();
+        try
+        {
+            if (!CanUpload)
+                return Reject("upload", path, "写入未开启：用户没有允许上传新文件。");
+
+            var bytes = _fs.UploadNew(path, data);
+            var dto = new WriteDto { Operation = "upload", Path = path, Bytes = bytes };
+            _audit.Write("upload", path, $"ok bytes={bytes}");
+            return new BridgeResult.Payload(dto);
+        }
+        catch (BridgeException ex)
+        {
+            _audit.Write("upload", path, "error=" + ex.Message);
+            return new BridgeResult.Failure(ex.Message);
+        }
+        catch (Exception ex)
+        {
+            Log.Write($"upload path={path} failed: {ex}");
+            var message = FriendlyFailure(ex);
+            _audit.Write("upload", path, "error=" + message);
+            return new BridgeResult.Failure(message);
+        }
+        finally
+        {
+            _concurrency.Release();
+        }
+    }
+
+    /// <summary>Creates one new directory; the parent must already exist.</summary>
+    public BridgeResult Mkdir(string path)
+    {
+        _concurrency.Wait();
+        try
+        {
+            if (!CanMkdir)
+                return Reject("mkdir", path, "写入未开启：用户没有允许创建目录。");
+
+            _fs.CreateDirectory(path);
+            var dto = new WriteDto { Operation = "mkdir", Path = path, Bytes = 0 };
+            _audit.Write("mkdir", path, "ok");
+            return new BridgeResult.Payload(dto);
+        }
+        catch (BridgeException ex)
+        {
+            _audit.Write("mkdir", path, "error=" + ex.Message);
+            return new BridgeResult.Failure(ex.Message);
+        }
+        catch (Exception ex)
+        {
+            Log.Write($"mkdir path={path} failed: {ex}");
+            var message = FriendlyFailure(ex);
+            _audit.Write("mkdir", path, "error=" + message);
+            return new BridgeResult.Failure(message);
+        }
+        finally
+        {
+            _concurrency.Release();
+        }
+    }
+
+    private BridgeResult Reject(string operation, string path, string message)
+    {
+        _audit.Write(operation, path, "error=" + message);
+        return new BridgeResult.Failure(message);
+    }
+
+    private IEnumerable<string> SupportedOperations()
+    {
+        foreach (var op in ReadOperationNames) yield return op;
+        if (CanUpload) yield return "upload";
+        if (CanMkdir) yield return "mkdir";
+    }
+
+    private static string AuditTarget(BridgeRequest request)
+    {
+        var text = request.Path;
+        if (request.Op == "read")
+            text += $" offset={request.Offset} length={request.Length}";
+        if (request.Op == "find" && !string.IsNullOrWhiteSpace(request.Glob))
+            text += $" glob={request.Glob} max={request.Max} depth={request.Depth}";
+        return text;
+    }
+
+    private static string Summary(BridgeResult result) => result switch
+    {
+        BridgeResult.Payload { Dto: ListDto list } =>
+            $"ok count={list.Count} truncated={list.Truncated}",
+        BridgeResult.Payload { Dto: FindDto find } =>
+            $"ok count={find.Count} dirs={find.DirsVisited} truncated={find.Truncated}",
+        BridgeResult.Payload { Dto: WriteDto write } =>
+            $"ok bytes={write.Bytes}",
+        BridgeResult.Payload => "ok",
+        BridgeResult.Raw raw =>
+            $"ok bytes={raw.Data.Data.Length} size={raw.Data.Size}",
+        BridgeResult.Failure failure => "error=" + failure.Message,
+        _ => "ok",
+    };
+
     /// <summary>
-    /// A real liveness probe, not just a description of the process: a cheap
-    /// LSTAT of the access root proves that the SSH session and the approved
-    /// root are both usable. A dead SSH connection therefore fails health.
+    /// A real liveness probe: a cheap LSTAT of the access root proves that the
+    /// SSH session and the approved root are both usable.
     /// </summary>
     private HealthDto Health()
     {
         _fs.Stat(".");
+
+        var writeOperations = new List<string>();
+        if (_session.AllowUpload) writeOperations.Add("upload");
+        if (_session.AllowMkdir) writeOperations.Add("mkdir");
 
         return new HealthDto
         {
@@ -89,10 +206,13 @@ public sealed class BridgeService
             User = _session.User,
             Root = _fs.Root,
             Home = _fs.Home,
-            ReadOnly = true,
+            ReadOnly = writeOperations.Count == 0,
             RootReachable = true,
             AllowSymlinks = _fs.AllowSymlinks,
-            Operations = OperationNames.ToList(),
+            AllowUpload = _session.AllowUpload,
+            AllowMkdir = _session.AllowMkdir,
+            Operations = ReadOperationNames.ToList(),
+            WriteOperations = writeOperations,
         };
     }
 

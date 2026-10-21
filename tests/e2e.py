@@ -23,7 +23,8 @@ WORK = ROOT / ".testtmp"
 sys.path.insert(0, str(HERE))
 from sftp_server import create_listener  # noqa: E402
 from bridge_client import (  # noqa: E402
-    Bridge, json_call, raw_get, read_all, request, text_call, USER, PASSWORD,
+    Bridge, json_call, mkdir, raw_get, read_all, request, text_call, upload,
+    USER, PASSWORD,
 )
 
 PASSED, FAILED = [], []
@@ -87,12 +88,14 @@ def main():
 
     ops_log = WORK / "ops.jsonl"
     port, _fingerprint, stop_server = create_listener(
-        str(root), USER, PASSWORD, log_path=str(ops_log))
+        str(root), USER, PASSWORD, log_path=str(ops_log), allow_write=True)
 
     print(f"\n=== SciBridge HTTP end-to-end (ssh server on 127.0.0.1:{port}) ===\n")
 
+    appdata = WORK / "appdata"
     known = WORK / "known_hosts.json"
-    bridge = Bridge(port, known)
+    bridge = Bridge(port, known, data_home=appdata)
+    writer = None
     symlink_bridge = None
     try:
         check("bridge starts and authenticates", bridge.ready, bridge.startup_error)
@@ -285,14 +288,113 @@ def main():
         check("HTTP also enforces the access root",
               status == 400 and b"OUTSIDE-SECRET" not in body, f"{status} {body[:160]}")
 
+        # ------------------------------------------------------- write mode
+        status, body, _ = upload(bridge, "denied.txt", b"denied")
+        check("read-only bridge rejects upload",
+              status == 403 and "写入未开启" in body.decode("utf-8", "replace"),
+              f"{status} {body[:200]}")
+        status, body, _ = mkdir(bridge, "denied-dir")
+        check("read-only bridge rejects mkdir",
+              status == 403 and "写入未开启" in body.decode("utf-8", "replace"),
+              f"{status} {body[:200]}")
+
+        writer = Bridge(port, WORK / "known_writer.json",
+                        allow_upload=True, allow_mkdir=True, data_home=appdata)
+        check("write-enabled bridge starts", writer.ready, writer.startup_error)
+        if writer.ready:
+            winfo = writer.info
+            check("write-enabled session reports upload and mkdir",
+                  winfo.get("allowUpload") is True and winfo.get("allowMkdir") is True, winfo)
+            status, health, _ = json_call(writer, "health")
+            check("write-enabled health is not read-only",
+                  status == 200 and health["readOnly"] is False
+                  and health["allowUpload"] is True and health["allowMkdir"] is True
+                  and health["writeOperations"] == ["upload", "mkdir"], health)
+            check("write handoff explains the limited write operations",
+                  "写操作" in writer.handoff and "/upload" in writer.handoff
+                  and "/mkdir" in writer.handoff and "不能覆盖" in writer.handoff,
+                  writer.handoff[:700])
+
+            payload = b"hello write\n"
+            status, body, _ = upload(writer, "uploaded.txt", payload)
+            check("upload creates a new file", status == 200 and b"uploaded" in body,
+                  f"{status} {body[:200]}")
+            status, text, _ = text_call(writer, "read", path="uploaded.txt")
+            check("uploaded content reads back exactly", status == 200 and text == payload.decode(), text)
+
+            status, body, _ = upload(writer, "uploaded.txt", b"again")
+            check("upload refuses to overwrite an existing file",
+                  status == 400 and "已存在" in body.decode("utf-8", "replace"),
+                  f"{status} {body[:200]}")
+            status, body, _ = upload(writer, "README.txt", b"nope")
+            check("upload refuses an existing seed file",
+                  status == 400 and "已存在" in body.decode("utf-8", "replace"),
+                  f"{status} {body[:200]}")
+            status, body, _ = upload(writer, "../outside/new.txt", b"nope")
+            check("upload enforces the access root",
+                  status == 400 and "越出" in body.decode("utf-8", "replace"),
+                  f"{status} {body[:200]}")
+            status, body, _ = upload(writer, "link_out/new.txt", b"nope")
+            check("upload refuses a symlinked directory",
+                  status == 400 and "符号链接" in body.decode("utf-8", "replace"),
+                  f"{status} {body[:200]}")
+            status, body, _ = upload(writer, "missing/dir/file.txt", b"nope")
+            check("upload requires an existing parent directory",
+                  status == 400 and ("不存在" in body.decode("utf-8", "replace")
+                                     or "不是" in body.decode("utf-8", "replace")),
+                  f"{status} {body[:200]}")
+
+            status, body, _ = upload(writer, "数据/新文件.txt", "中文内容\n".encode())
+            check("upload supports unicode paths", status == 200, f"{status} {body[:200]}")
+            status, text, _ = text_call(writer, "read", path="数据/新文件.txt")
+            check("unicode upload reads back", status == 200 and "中文内容" in text, text)
+
+            status, body, _ = upload(writer, "json-upload.txt", b"x", format_name="json")
+            try:
+                uploaded = json.loads(body) if status == 200 else {}
+            except Exception:
+                uploaded = {}
+            check("upload JSON response is structured",
+                  status == 200 and uploaded.get("operation") == "upload"
+                  and uploaded.get("bytes") == 1, f"{status} {body[:200]}")
+
+            status, body, _ = mkdir(writer, "newdir")
+            check("mkdir creates a directory", status == 200 and b"created" in body,
+                  f"{status} {body[:200]}")
+            status, listing, _ = json_call(writer, "list", path=".")
+            names = {e["name"]: e for e in (listing or {}).get("entries", [])}
+            check("created directory appears in listing",
+                  names.get("newdir", {}).get("type") == "dir", names)
+            status, body, _ = mkdir(writer, "newdir")
+            check("mkdir refuses an existing path",
+                  status == 400 and "已存在" in body.decode("utf-8", "replace"),
+                  f"{status} {body[:200]}")
+            status, body, _ = mkdir(writer, "../evil")
+            check("mkdir enforces the access root",
+                  status == 400 and "越出" in body.decode("utf-8", "replace"),
+                  f"{status} {body[:200]}")
+
+            audit_dir = appdata / "SciBridge" / "audit"
+            audit_files = sorted(audit_dir.glob("audit-*.log")) if audit_dir.exists() else []
+            audit_text = "\n".join(f.read_text(encoding="utf-8") for f in audit_files)
+            check("audit log is timestamp-named and records writes",
+                  bool(audit_files) and "\tupload\t" in audit_text and "\tmkdir\t" in audit_text,
+                  audit_text[-800:])
+            check("audit log contains no password or token",
+                  PASSWORD not in audit_text and winfo["token"] not in audit_text,
+                  "sensitive value found in audit log")
+
         # ------------------------------------------------ write-op audit trail
         ops = [json.loads(line) for line in ops_log.read_text(encoding="utf-8").splitlines() if line.strip()]
-        writes = [op for op in ops if op["op"].startswith("WRITE_") or op["op"] in ("chattr", "setstat")]
-        check(f"server saw zero write operations across {len(ops)} requests",
-              not writes, writes[:5])
+        writes = [op for op in ops if op["op"].startswith("WRITE_")]
+        destructive = [op for op in writes
+                       if op["op"] not in ("WRITE_OPEN", "WRITE_RENAME", "WRITE_MKDIR")]
+        check(f"server saw only new-file/new-directory writes ({len(writes)} writes)",
+              not destructive, destructive[:5])
 
         # ------------------------------------------------- symlink opt-in path
-        symlink_bridge = Bridge(port, WORK / "known_sym.json", allow_symlinks=True)
+        symlink_bridge = Bridge(port, WORK / "known_sym.json", allow_symlinks=True,
+                                data_home=appdata)
         check("second bridge starts with symlinks allowed",
               symlink_bridge.ready, symlink_bridge.startup_error)
         if symlink_bridge.ready:
@@ -306,6 +408,9 @@ def main():
 
         # ----------------------------------------------------- liveness error
         bridge.stop()
+        if writer is not None:
+            writer.stop()
+            writer = None
         if symlink_bridge is not None:
             symlink_bridge.stop()
             symlink_bridge = None
@@ -320,6 +425,11 @@ def main():
             bridge.stop()
         except Exception:
             pass
+        if writer is not None:
+            try:
+                writer.stop()
+            except Exception:
+                pass
         if symlink_bridge is not None:
             try:
                 symlink_bridge.stop()

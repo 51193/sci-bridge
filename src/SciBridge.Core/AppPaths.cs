@@ -12,6 +12,8 @@ public static class AppPaths
     public static string KnownHostsFile => Path.Combine(DataDir, "known_hosts.json");
     public static string SettingsFile => Path.Combine(DataDir, "settings.json");
     public static string LogFile => Path.Combine(DataDir, "scibridge.log");
+    /// <summary>One timestamped audit file per bridge session.</summary>
+    public static string AuditDir => Path.Combine(DataDir, "audit");
 
     private static string ResolveDataDir()
     {

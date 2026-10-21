@@ -22,7 +22,8 @@ public sealed class BridgeHost : IDisposable
 
     public SessionInfo Session { get; }
 
-    public static BridgeHost Start(RemoteFs fs, string host, int port, string user)
+    public static BridgeHost Start(RemoteFs fs, string host, int port, string user,
+        bool allowUpload = false, bool allowMkdir = false)
     {
         var token = NewToken();
         var session = new SessionInfo
@@ -37,9 +38,12 @@ public sealed class BridgeHost : IDisposable
             AppVersion = BuildInfo.Version,
             CreatedUtc = DateTime.UtcNow.ToString("o"),
             AllowSymlinks = fs.AllowSymlinks,
+            AllowUpload = allowUpload,
+            AllowMkdir = allowMkdir,
         };
 
-        var service = new BridgeService(fs, session);
+        var audit = new AuditLog(session);
+        var service = new BridgeService(fs, session, audit);
         var http = new HttpBridgeServer(service, token);
         session.Url = $"http://127.0.0.1:{http.Port}";
 

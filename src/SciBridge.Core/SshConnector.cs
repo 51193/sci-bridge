@@ -12,6 +12,8 @@ public sealed record ConnectRequest(
     string Password,
     string Root,
     bool AllowSymlinks,
+    bool AllowUpload = false,
+    bool AllowMkdir = false,
     int TimeoutSeconds = 20);
 
 public enum HostKeyDecision

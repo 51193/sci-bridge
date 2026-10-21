@@ -7,6 +7,7 @@ handoff text. Tests talk to it exactly like an agent would: with HTTP GET reques
 to 127.0.0.1, never by executing a CLI or reading a session file.
 """
 import json
+import os
 import pathlib
 import subprocess
 import time
@@ -21,7 +22,8 @@ DEFAULT_DLL = pathlib.Path(__file__).resolve().parent.parent / "src/SciBridge.Te
 
 class Bridge:
     def __init__(self, ssh_port, known_hosts, allow_symlinks=False, user=USER,
-                 password=PASSWORD, root=".", dll=DEFAULT_DLL):
+                 password=PASSWORD, root=".", dll=DEFAULT_DLL,
+                 allow_upload=False, allow_mkdir=False, data_home=None):
         cmd = [
             "dotnet", str(dll), "serve",
             "--host", "127.0.0.1", "--port", str(ssh_port),
@@ -31,8 +33,17 @@ class Bridge:
         ]
         if allow_symlinks:
             cmd.append("--allow-symlinks")
+        if allow_upload:
+            cmd.append("--allow-upload")
+        if allow_mkdir:
+            cmd.append("--allow-mkdir")
+        env = None
+        if data_home is not None:
+            env = dict(os.environ)
+            env["XDG_DATA_HOME"] = str(data_home)
         self.proc = subprocess.Popen(
-            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=env)
         self.info = None
         self.handoff = ""
         self.startup_error = ""
@@ -81,9 +92,9 @@ class Bridge:
             self.proc.kill()
 
 
-def raw_get(url, headers=None, method="GET", timeout=30):
+def raw_request(url, headers=None, method="GET", data=None, timeout=30):
     """Returns (status, body, headers). Status 0 means the connection failed."""
-    req = urllib.request.Request(url, headers=headers or {}, method=method)
+    req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
         with opener.open(req, timeout=timeout) as response:
@@ -94,12 +105,34 @@ def raw_get(url, headers=None, method="GET", timeout=30):
         return 0, str(error).encode("utf-8", "replace"), {}
 
 
-def request(bridge, op, headers=None, method="GET", timeout=30, **params):
+def raw_get(url, headers=None, method="GET", timeout=30):
+    return raw_request(url, headers=headers, method=method, timeout=timeout)
+
+
+def request(bridge, op, headers=None, method="GET", timeout=30, data=None, **params):
     query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
     url = f"{bridge.url}/{bridge.token}/{op}"
     if query:
         url += "?" + query
-    return raw_get(url, headers=headers, method=method, timeout=timeout)
+    return raw_request(url, headers=headers, method=method, data=data, timeout=timeout)
+
+
+def upload(bridge, path, data, format_name="text"):
+    query = urllib.parse.urlencode(
+        {"path": path, "format": format_name}, quote_via=urllib.parse.quote)
+    return raw_request(
+        f"{bridge.base_url}upload?{query}",
+        headers={"Content-Type": "application/octet-stream"},
+        method="PUT", data=data)
+
+
+def mkdir(bridge, path, format_name="text"):
+    query = urllib.parse.urlencode(
+        {"path": path, "format": format_name}, quote_via=urllib.parse.quote)
+    return raw_request(
+        f"{bridge.base_url}mkdir?{query}",
+        headers={"Content-Type": "application/octet-stream"},
+        method="POST", data=b"")
 
 
 def json_call(bridge, op, **params):

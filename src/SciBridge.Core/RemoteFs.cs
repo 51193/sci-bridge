@@ -264,6 +264,100 @@ public sealed class RemoteFs : IDisposable
         });
     }
 
+    // ------------------------------------------------------------------ write
+
+    /// <summary>
+    /// Uploads a brand-new file. Existing paths are never overwritten: the
+    /// caller must choose a new name. The bytes go to a temporary file in the
+    /// same directory and are renamed only after the upload succeeds.
+    /// </summary>
+    public long UploadNew(string agentPath, byte[] data)
+    {
+        var relative = NormalizeWritePath(agentPath);
+
+        return Run(() =>
+        {
+            var target = ResolveNewPath(relative);
+            var temp = JoinRemote(target.ParentRemote, ".scibridge-upload-" + Guid.NewGuid().ToString("N"));
+
+            try
+            {
+                using var input = new MemoryStream(data, writable: false);
+                _sftp.UploadFile(input, temp, canOverride: false);
+
+                // Re-check immediately before the rename: no overwrite is allowed.
+                _dirCache.Clear();
+                if (ListParent(target.ParentRemote).Any(f => f.Name == target.Name))
+                    throw new BridgeException($"路径已存在：'{relative}'。本工具只允许新建，不能覆盖。");
+
+                _sftp.RenameFile(temp, target.RemotePath);
+                _dirCache.Clear();
+                return (long)data.Length;
+            }
+            catch (Exception ex) when (ex is not BridgeException)
+            {
+                throw new BridgeException($"上传失败：'{relative}'。", ex);
+            }
+            finally
+            {
+                try { if (_sftp.Exists(temp)) _sftp.DeleteFile(temp); }
+                catch { /* best effort */ }
+            }
+        });
+    }
+
+    /// <summary>Creates one directory; the parent must already exist.</summary>
+    public void CreateDirectory(string agentPath)
+    {
+        var relative = NormalizeWritePath(agentPath);
+
+        Run(() =>
+        {
+            var target = ResolveNewPath(relative);
+            try
+            {
+                _sftp.CreateDirectory(target.RemotePath);
+                _dirCache.Clear();
+                return true;
+            }
+            catch (Exception ex) when (ex is not BridgeException)
+            {
+                throw new BridgeException($"创建目录失败：'{relative}'。", ex);
+            }
+        });
+    }
+
+    private static string NormalizeWritePath(string? agentPath)
+    {
+        var relative = PathGuard.NormalizeRelative(agentPath);
+        if (relative == ".")
+            throw new BridgeException("根目录本身不能作为写入目标。");
+        return relative;
+    }
+
+    private (string RemotePath, string ParentRemote, string Name) ResolveNewPath(string relative)
+    {
+        var components = PathGuard.Components(relative);
+        var name = components[^1];
+        var parentRelative = components.Count == 1
+            ? "."
+            : string.Join('/', components.Take(components.Count - 1));
+
+        var parent = Resolve(parentRelative);
+        if (parent.IsSymlink) throw SymlinkRefused(parent.Name);
+        if (!parent.Attributes.IsDirectory)
+            throw new BridgeException($"'{parentRelative}' 不是目录。");
+
+        var remote = JoinRemote(parent.RemotePath, name);
+        if (ListParent(parent.RemotePath).Any(f => f.Name == name))
+            throw new BridgeException($"路径已存在：'{relative}'。本工具只允许新建，不能覆盖。");
+
+        return (remote, parent.RemotePath, name);
+    }
+
+    private static string JoinRemote(string parent, string name)
+        => parent == "." ? name : parent.TrimEnd('/') + "/" + name;
+
     public static Regex GlobToRegex(string glob)
     {
         var sb = new System.Text.StringBuilder("^");

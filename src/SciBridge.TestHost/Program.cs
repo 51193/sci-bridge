@@ -18,7 +18,7 @@ if (argv.Length > 0 && argv[0] == "serve")
 }
 
 Console.Error.WriteLine("usage: SciBridge.TestHost serve --host H --port P --user U --password PW [--root R]");
-Console.Error.WriteLine("       [--known-hosts FILE] [--allow-symlinks] [--reject-hostkey]");
+Console.Error.WriteLine("       [--known-hosts FILE] [--allow-symlinks] [--allow-upload] [--allow-mkdir] [--reject-hostkey]");
 return 2;
 
 static async Task<int> ServeAsync(string[] args)
@@ -30,6 +30,8 @@ static async Task<int> ServeAsync(string[] args)
     var knownHosts = "";
     var port = 22;
     var allowSymlinks = false;
+    var allowUpload = false;
+    var allowMkdir = false;
     var autoAccept = true;
 
     for (var i = 0; i < args.Length; i++)
@@ -43,6 +45,8 @@ static async Task<int> ServeAsync(string[] args)
             case "--root": root = args[++i]; break;
             case "--known-hosts": knownHosts = args[++i]; break;
             case "--allow-symlinks": allowSymlinks = true; break;
+            case "--allow-upload": allowUpload = true; break;
+            case "--allow-mkdir": allowMkdir = true; break;
             case "--reject-hostkey": autoAccept = false; break;
             default:
                 Console.Error.WriteLine($"未知参数：{args[i]}");
@@ -60,7 +64,7 @@ static async Task<int> ServeAsync(string[] args)
             store,
             interaction);
 
-        using var bridge = BridgeHost.Start(fs, host, port, user);
+        using var bridge = BridgeHost.Start(fs, host, port, user, allowUpload, allowMkdir);
 
         Console.WriteLine("READY " + bridge.Session.ToJson().Replace('\n', ' ').Replace('\r', ' '));
         Console.WriteLine("----- HANDOFF -----");
