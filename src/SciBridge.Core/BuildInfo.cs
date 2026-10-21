@@ -15,9 +15,12 @@ public static class BuildInfo
 
     public static string DisplayVersion => "SciBridge " + Version;
 
+    /// <summary>Repository URL embedded by MSBuild (AssemblyMetadata).</summary>
+    public static string RepositoryUrl { get; } = ResolveMetadata("RepositoryUrl");
+
     private static string ResolveVersion()
     {
-        var assembly = Assembly.GetEntryAssembly() ?? typeof(BuildInfo).Assembly;
+        var assembly = EntryAssembly;
         var attribute = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>();
         var informational = attribute?.InformationalVersion;
 
@@ -32,4 +35,14 @@ public static class BuildInfo
         var numeric = assembly.GetName().Version;
         return numeric is null ? "dev" : numeric.ToString(3);
     }
+
+    private static string ResolveMetadata(string key)
+    {
+        var attribute = EntryAssembly.GetCustomAttributes<AssemblyMetadataAttribute>()
+            .FirstOrDefault(a => string.Equals(a.Key, key, StringComparison.Ordinal));
+        return attribute?.Value ?? "";
+    }
+
+    private static Assembly EntryAssembly =>
+        Assembly.GetEntryAssembly() ?? typeof(BuildInfo).Assembly;
 }

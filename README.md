@@ -157,6 +157,8 @@ dotnet publish src/SciBridge.App/SciBridge.App.csproj -c Release -p:Version=1.0.
 - C# 代码里没有版本常量；`BuildInfo` 从程序集元数据读取版本，并写入内部
   `SessionInfo.AppVersion` / `health` 返回值。
 - GUI 右下角显示这个版本。非 tag 的本地构建显示 `0.0.0-dev`，不会被误认为发布版。
+- GUI 左下角显示 GitHub 仓库链接；URL 同样来自程序集元数据
+  （`AssemblyMetadata("RepositoryUrl", ...)`），不在 C# 里硬编码。
 
 ### 更新
 

@@ -20,6 +20,7 @@ internal sealed class MainForm : Form
     private readonly Button _folderButton = new();
     private readonly Label _statusLabel = new();
     private readonly Label _versionLabel = new();
+    private readonly LinkLabel _repoLink = new();
     private readonly TextBox _handoffBox = new();
     private readonly bool _checkUpdates;
 
@@ -171,14 +172,35 @@ internal sealed class MainForm : Form
                            "Codex 不需要执行本程序。";
         root.Controls.Add(_handoffBox, 0, 4);
 
-        // ---- version (embedded from the release tag at build time)
+        // ---- footer: repository link + version (both embedded at build time)
         _versionLabel.AutoSize = true;
         _versionLabel.Anchor = AnchorStyles.Right;
         _versionLabel.TextAlign = ContentAlignment.MiddleRight;
         _versionLabel.ForeColor = SystemColors.GrayText;
         _versionLabel.Margin = new Padding(2, 6, 2, 0);
         _versionLabel.Text = BuildInfo.DisplayVersion;
-        root.Controls.Add(_versionLabel, 0, 5);
+
+        _repoLink.AutoSize = true;
+        _repoLink.Anchor = AnchorStyles.Left;
+        _repoLink.Text = "GitHub 仓库";
+        _repoLink.LinkBehavior = LinkBehavior.HoverUnderline;
+        _repoLink.LinkColor = Color.FromArgb(31, 111, 235);
+        _repoLink.Margin = new Padding(2, 6, 2, 0);
+        _repoLink.LinkClicked += (_, _) => OpenRepository();
+        _repoLink.Visible = !string.IsNullOrWhiteSpace(BuildInfo.RepositoryUrl);
+
+        var footer = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            AutoSize = true,
+            Margin = new Padding(0),
+        };
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        footer.Controls.Add(_repoLink, 0, 0);
+        footer.Controls.Add(_versionLabel, 1, 0);
+        root.Controls.Add(footer, 0, 5);
 
         Controls.Add(root);
         AcceptButton = _connectButton;
@@ -188,6 +210,8 @@ internal sealed class MainForm : Form
         tips.SetToolTip(_rootBox, "例如 . 或 data/2024。Codex 无法访问这个目录之外的内容。");
         tips.SetToolTip(_symlinkBox, "符号链接可能指向可读根目录之外。默认不跟随更安全。");
         tips.SetToolTip(_versionLabel, "版本来自构建时的 release tag；本地非发布构建显示 0.0.0-dev。");
+        if (!string.IsNullOrWhiteSpace(BuildInfo.RepositoryUrl))
+            tips.SetToolTip(_repoLink, BuildInfo.RepositoryUrl);
     }
 
     private static void AddRow(TableLayoutPanel table, string label, Control control, string tooltip)
@@ -557,6 +581,29 @@ internal sealed class MainForm : Form
         try { _bridge?.Dispose(); } catch { /* best effort */ }
         _bridge = null;
         Close();
+    }
+
+    private void OpenRepository()
+    {
+        var url = BuildInfo.RepositoryUrl;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+            uri.Scheme != Uri.UriSchemeHttps ||
+            !uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase))
+        {
+            MessageBox.Show(this, "仓库链接无效。", "无法打开链接",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, "无法打开浏览器：\n\n" + ex.Message,
+                "打开链接失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)

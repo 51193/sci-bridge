@@ -48,6 +48,7 @@
   <ItemGroup>
     <ProjectReference Include="../SciBridge.Core/SciBridge.Core.csproj" />
     <!-- DPAPI (ProtectedData) is part of the Windows Desktop framework on .NET 10. -->
+    <AssemblyMetadata Include="RepositoryUrl" Value="https://github.com/51193/sci-bridge" />
   </ItemGroup>
 
 </Project>
