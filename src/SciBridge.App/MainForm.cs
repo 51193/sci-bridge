@@ -47,7 +47,7 @@ internal sealed class MainForm : Form
 
     private void BuildUi()
     {
-        Text = "SciBridge — 机构服务器只读数据桥";
+        Text = "SciBridge — 机构服务器科研数据桥（默认只读）";
         ClientSize = new Size(780, 760);
         MinimumSize = new Size(680, 620);
         StartPosition = FormStartPosition.CenterScreen;
@@ -74,7 +74,7 @@ internal sealed class MainForm : Form
         {
             AutoSize = true,
             Font = new Font(Font.FontFamily, 13F, FontStyle.Bold),
-            Text = "只读科研数据桥",
+            Text = "科研数据桥（默认只读）",
             Margin = new Padding(2, 0, 2, 2),
         };
         var subtitle = new Label
@@ -82,8 +82,8 @@ internal sealed class MainForm : Form
             AutoSize = true,
             MaximumSize = new Size(730, 0),
             ForeColor = SystemColors.GrayText,
-            Text = "在本机连接机构服务器，只把“列目录 / 看属性 / 读文件 / 按名字查找”交给 Codex。" +
-                   "没有写入、删除、改名、上传，也没有远程命令。密码只用在这台电脑上。",
+            Text = "在本机连接机构服务器。默认只读；需要时可按需开启“仅新建文件/目录”的写权限。" +
+                   "没有覆盖、删除、改名或远程命令。密码只用在这台电脑上。",
             Margin = new Padding(2, 0, 2, 10),
         };
         var header = new FlowLayoutPanel

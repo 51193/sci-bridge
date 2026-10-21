@@ -89,7 +89,7 @@ internal static class Program
     private static void PrintHelp()
     {
         Console.WriteLine($"""
-            SciBridge {BuildInfo.Version} — 机构服务器只读数据桥
+            SciBridge {BuildInfo.Version} — 机构服务器科研数据桥（默认只读）
 
             用法：
               双击 SciBridge.exe                 打开窗口，连接服务器
@@ -101,8 +101,8 @@ internal static class Program
             把整段文字粘给 Codex，Codex 用 curl.exe 访问 127.0.0.1 即可读取数据；
             不需要执行 SciBridge.exe，也不需要读取任何会话文件。
 
-            只读保证：只提供列目录、看属性、读文件、按名字查找。
-            没有任何写入、删除、改名、上传或远程命令执行，且被限制在“可读根目录”内。
+            默认只读；需要时可在 GUI 里按需开启“新建文件/目录”的写权限。
+            没有覆盖、删除、改名或远程命令执行，所有路径都限制在“可读根目录”内。
 
             --self-test 选项：
               --host <地址>    默认 127.0.0.1
