@@ -67,8 +67,10 @@ jobs:
           test -f "$APP"
 
           mkdir -p release
-          cp "$APP" "release/SciBridge-${VERSION}-win11.exe"
-          (cd release && sha256sum SciBridge-*.exe > SHA256SUMS.txt)
+          # Stable asset name: the app updates itself, so the download name
+          # must not carry a version. The tag still supplies the version.
+          cp "$APP" "release/SciBridge-win11.exe"
+          (cd release && sha256sum SciBridge-win11.exe > SHA256SUMS.txt)
 
           ls -lh release
 
@@ -80,7 +82,7 @@ jobs:
           set -euo pipefail
           {
             printf 'Windows 11 x64 自包含单文件，无需安装 Python 或 .NET。\n\n'
-            printf -- '- `SciBridge-%s-win11.exe`：主程序\n' "$VERSION"
+            printf -- '- `SciBridge-win11.exe`：主程序（稳定文件名）\n'
             printf -- '- `SHA256SUMS.txt`：SHA-256 校验和（应用内更新器使用）\n\n'
             printf '首次运行可能出现 SmartScreen 提示。\n'
           } > "$RUNNER_TEMP/notes.md"

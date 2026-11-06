@@ -186,7 +186,7 @@ dotnet publish src/SciBridge.App/SciBridge.App.csproj -c Release -p:Version=1.0.
 
 - GUI 显示后异步请求 GitHub `releases/latest`，只接受稳定版；`0.0.0-dev` 不自动更新。
 - 发现新版本才弹窗询问；“稍后”只跳过本次，下次启动会再次提醒。
-- 只下载 `SciBridge-<版本>-win11.exe`，并用同 Release 的 `SHA256SUMS.txt` 校验。
+- 只下载稳定文件名 `SciBridge-win11.exe`，并用同 Release 的 `SHA256SUMS.txt` 校验。
 - 下载完成后启动隐藏 helper；它等待旧进程退出，备份旧 exe、替换、重启。失败会保留/恢复旧版本。
 - 更新包不包含 skill、说明或测试服务器；也不做代码签名（见安全模型）。
 
@@ -201,7 +201,7 @@ dotnet publish src/SciBridge.App/SciBridge.App.csproj -c Release -p:Version=1.0.
 - 推送 tag 触发：`git tag v1.0.0 && git push origin v1.0.0`
 
 工作流只交叉编译 `SciBridge.exe`，生成
-`SciBridge-<版本>-win11.exe` 和 `SHA256SUMS.txt`，并创建或更新对应的
+`SciBridge-win11.exe`（稳定文件名，不带版本）和 `SHA256SUMS.txt`，并创建或更新对应的
 GitHub Release。不再生成 zip，也不打包 skill、说明或测试服务器。
 
 ## 测试
