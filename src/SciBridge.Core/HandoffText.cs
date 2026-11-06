@@ -56,7 +56,7 @@ public static class HandoffText
         if (canWrite)
         {
             sb.AppendLine();
-            sb.AppendLine("写操作（仅在用户已勾选写权限时可用；单次上传上限 64 MiB）：");
+            sb.AppendLine("写操作（仅在用户已勾选写权限时可用；单次上传上限 2 GiB）：");
             if (session.AllowUpload)
             {
                 sb.AppendLine($"  curl.exe --noproxy \"*\" --fail-with-body -T \"<本机文件>\" \"{baseUrl}upload?path=<服务器上的新文件路径>\"");

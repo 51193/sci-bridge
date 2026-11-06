@@ -271,7 +271,7 @@ public sealed class RemoteFs : IDisposable
     /// caller must choose a new name. The bytes go to a temporary file in the
     /// same directory and are renamed only after the upload succeeds.
     /// </summary>
-    public long UploadNew(string agentPath, byte[] data)
+    public long UploadNew(string agentPath, Stream data, long length)
     {
         var relative = NormalizeWritePath(agentPath);
 
@@ -282,8 +282,10 @@ public sealed class RemoteFs : IDisposable
 
             try
             {
-                using var input = new MemoryStream(data, writable: false);
-                _sftp.UploadFile(input, temp, canOverride: false);
+                _sftp.UploadFile(data, temp, canOverride: false);
+
+                if (data is BoundedReadStream bounded && !bounded.IsFullyRead)
+                    throw new BridgeException("上传数据不完整。");
 
                 // Re-check immediately before the rename: no overwrite is allowed.
                 _dirCache.Clear();
@@ -292,7 +294,7 @@ public sealed class RemoteFs : IDisposable
 
                 _sftp.RenameFile(temp, target.RemotePath);
                 _dirCache.Clear();
-                return (long)data.Length;
+                return length;
             }
             catch (Exception ex) when (ex is not BridgeException)
             {

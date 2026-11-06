@@ -85,7 +85,7 @@ public sealed class BridgeService
     }
 
     /// <summary>Uploads a brand-new file; existing files are never overwritten.</summary>
-    public BridgeResult Upload(string path, byte[] data)
+    public BridgeResult Upload(string path, Stream data, long length)
     {
         _concurrency.Wait();
         try
@@ -93,7 +93,7 @@ public sealed class BridgeService
             if (!CanUpload)
                 return Reject("upload", path, "写入未开启：用户没有允许上传新文件。");
 
-            var bytes = _fs.UploadNew(path, data);
+            var bytes = _fs.UploadNew(path, data, length);
             var dto = new WriteDto { Operation = "upload", Path = path, Bytes = bytes };
             _audit.Write("upload", path, $"ok bytes={bytes}");
             return new BridgeResult.Payload(dto);

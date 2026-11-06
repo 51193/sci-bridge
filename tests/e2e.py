@@ -358,6 +358,15 @@ def main():
                   status == 200 and uploaded.get("operation") == "upload"
                   and uploaded.get("bytes") == 1, f"{status} {body[:200]}")
 
+            large = b"L" * (65 * 1024 * 1024)
+            status, body, _ = upload(writer, "large-upload.bin", large)
+            check("upload supports payloads larger than 64 MiB",
+                  status == 200, f"{status} {body[:200]}")
+            status, stat, _ = json_call(writer, "stat", path="large-upload.bin")
+            check("large upload has the expected remote size",
+                  status == 200 and stat["entry"]["size"] == len(large),
+                  f"{status} {stat}")
+
             status, body, _ = mkdir(writer, "newdir")
             check("mkdir creates a directory", status == 200 and b"created" in body,
                   f"{status} {body[:200]}")

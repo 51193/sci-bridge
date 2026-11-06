@@ -17,7 +17,7 @@ public sealed class HttpBridgeServer : IDisposable
 {
     private const int MaxHeaderBytes = 16 * 1024;
     /// <summary>Naive upload cap; large datasets are intentionally out of scope.</summary>
-    public const long MaxUploadBytes = 64L * 1024 * 1024;
+    public const long MaxUploadBytes = 2L * 1024 * 1024 * 1024;
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = false };
 
     private readonly TcpListener _listener;
@@ -66,9 +66,9 @@ public sealed class HttpBridgeServer : IDisposable
             {
                 client.NoDelay = true;
                 using var stream = client.GetStream();
-                // Uploads are capped at 64 MiB; keep the request alive long
-                // enough for a slow but legitimate link.
-                using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+                // Uploads are capped at 2 GiB and streamed to SFTP; keep the
+                // request alive long enough for a slow but legitimate link.
+                using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(30));
                 var ct = timeout.Token;
 
                 var head = await ReadHeadAsync(stream, ct).ConfigureAwait(false);
@@ -178,15 +178,10 @@ public sealed class HttpBridgeServer : IDisposable
                         await stream.FlushAsync(ct).ConfigureAwait(false);
                     }
 
-                    var body = await ReadBodyAsync(stream, (int)contentLength, ct).ConfigureAwait(false);
-                    if (body is null)
-                    {
-                        await WriteAsync(stream, 400, "text/plain; charset=utf-8",
-                            Encoding.UTF8.GetBytes("error: 上传数据不完整。\n"), ct).ConfigureAwait(false);
-                        return;
-                    }
-
-                    var uploadResult = _service.Upload(path, body);
+                    // Stream directly from the socket to SFTP; never buffer a
+                    // multi-gigabyte upload in memory.
+                    using var body = new BoundedReadStream(stream, contentLength);
+                    var uploadResult = _service.Upload(path, body, contentLength);
                     await RespondAsync(stream, uploadResult,
                         new BridgeRequest("upload", path, Format: format), ct).ConfigureAwait(false);
                     return;
@@ -247,23 +242,6 @@ public sealed class HttpBridgeServer : IDisposable
                 Log.Write("http handler failed: " + ex.Message);
             }
         }
-    }
-
-    private static async Task<byte[]?> ReadBodyAsync(
-        NetworkStream stream, int length, CancellationToken ct)
-    {
-        if (length == 0) return Array.Empty<byte>();
-
-        var buffer = new byte[length];
-        var total = 0;
-        while (total < length)
-        {
-            var read = await stream.ReadAsync(buffer.AsMemory(total, length - total), ct)
-                .ConfigureAwait(false);
-            if (read == 0) return null;
-            total += read;
-        }
-        return buffer;
     }
 
     private static async Task RespondAsync(
