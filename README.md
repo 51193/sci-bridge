@@ -67,6 +67,7 @@ src/
 ├─ SciBridge.Core/          跨平台核心库（net10.0），不含任何 Windows 专属代码
 │   ├─ SshConnector.cs      SSH 连接、TOFU 主机公钥、键盘交互（2FA）
 │   ├─ RemoteFs.cs          只读操作 + 新建文件/目录 + 根目录约束
+│   ├─ BoundedReadStream.cs 把 HTTP 请求体流式交给 SFTP（不整包进内存）
 │   ├─ PathGuard.cs         路径规范化与越界拒绝
 │   ├─ BridgeService.cs     读写操作分发、权限检查与审计
 │   ├─ HttpBridgeServer.cs  手写最小 HTTP/1.1，只绑 127.0.0.1
@@ -83,8 +84,8 @@ src/
 │   └─ UpdateService.cs     GitHub Release 检查、下载、SHA-256 校验
 ├─ SciBridge.App/           Windows GUI 外壳（net10.0-windows，WinForms）
 │   ├─ Program.cs           GUI / 诊断入口；不再提供 ls/cat CLI
-│   ├─ MainForm.cs          主窗口 + 启动后异步更新检查
-│   ├─ UpdateProgressForm.cs 下载/校验进度
+│   ├─ MainForm.cs          主窗口 + 更新检查/底部下载进度 + 写选项折叠
+│   ├─ BracePanel.cs        折叠写选项的缩进引导线
 │   ├─ UpdateApplier.cs     隐藏 helper：等待退出、替换 exe、重启
 │   ├─ Dialogs.cs           主机公钥确认、2FA
 │   ├─ SecretStore.cs       DPAPI 加解密（"记住密码"）
@@ -96,7 +97,7 @@ tools/testserver/          仅开发测试用的本机测试服务器；不随�
 tests/
 ├─ sftp_server.py           基于 paramiko 的真实 SSH/SFTP 服务端（默认只读，可测试写、记录所有请求）
 ├─ bridge_client.py         测试共享的 HTTP 客户端/Bridge 进程辅助
-├─ e2e.py                   77 项端到端断言（真实 SSH 服务端 + 真实 HTTP 接口）
+├─ e2e.py                   79 项端到端断言（真实 SSH 服务端 + 真实 HTTP 接口）
 ├─ go_server_check.py       20 项断言：验证 Go 测试服务器是合格的替身
 ├─ wine_check.py            8 项：用 Wine 验证交付的 Windows exe（自检/HTTP 路径）
 └─ wine_selftest.py         14 项断言：Windows 测试服务器 + Windows SciBridge 全链路
@@ -114,6 +115,7 @@ tools/make_icon.py          生成 app.ico（纯标准库，附 ASCII 预览）
 - **不落盘 session**。GUI 只在内存里保存 URL/令牌；没有 agent 可读的会话文件。
 - **写能力默认关闭且只做加法**。勾选后仅允许上传新文件、创建一级目录；没有覆盖、
   重命名、删除、chmod 或远程命令执行。写路径仍受读根目录和符号链接策略约束。
+  上传流式写入 SFTP，单次上限 2 GiB。
 - **审计日志**。每次连接在 `%LOCALAPPDATA%\SciBridge\audit` 生成
   `audit-<时间戳>-<pid>.log`，记录操作、路径、字节数、成功/失败；不记录令牌、
   密码或文件内容。GUI 的“打开审计日志”可随时查看。
@@ -143,7 +145,7 @@ tools/make_icon.py          生成 app.ico（纯标准库，附 ASCII 预览）
 写接口（仅当用户勾选对应权限）：
 
 ```text
-PUT  /<token>/upload?path=<新文件路径>    body=原始字节（上限 64 MiB，不覆盖）
+PUT  /<token>/upload?path=<新文件路径>    body=原始字节（上限 2 GiB，不覆盖）
 POST /<token>/mkdir?path=<新目录>         父目录必须已存在
 ```
 
@@ -177,6 +179,8 @@ dotnet publish src/SciBridge.App/SciBridge.App.csproj -c Release -p:Version=1.0.
 - GUI 右下角显示这个版本。非 tag 的本地构建显示 `0.0.0-dev`，不会被误认为发布版。
 - GUI 左下角显示 GitHub 仓库链接；URL 同样来自程序集元数据
   （`AssemblyMetadata("RepositoryUrl", ...)`），不在 C# 里硬编码。
+- 写入子项默认折叠，只有勾选“允许写入”才展开；左侧有缩进引导线。
+- 更新下载时在窗口底部展开进度条和取消按钮，不阻塞主界面。
 
 ### 更新
 
@@ -205,7 +209,7 @@ GitHub Release。不再生成 zip，也不打包 skill、说明或测试服务�
 ```bash
 python3 -m venv .venv && .venv/bin/pip install paramiko pyyaml
 
-.venv/bin/python tests/e2e.py             # 77 项：真实 SSH 服务端 + 真实 HTTP
+.venv/bin/python tests/e2e.py             # 79 项：真实 SSH 服务端 + 真实 HTTP
 .venv/bin/python tests/go_server_check.py # 20 项：Go 测试服务器是否合格
 .venv/bin/python tests/wine_check.py      # 8 项：交付的 Windows exe（自检/HTTP 路径）
 .venv/bin/python tests/wine_selftest.py   # 14 项：Windows 测试服务器 + Windows 自检

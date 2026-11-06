@@ -20,6 +20,7 @@ internal sealed class MainForm : Form
     private readonly CheckBox _uploadBox = new();
     private readonly CheckBox _mkdirBox = new();
     private readonly Label _writeWarning = new();
+    private readonly TableLayoutPanel _writeOptions = new();
     private readonly Button _connectButton = new();
     private readonly Button _copyButton = new();
     private readonly Button _folderButton = new();
@@ -28,12 +29,17 @@ internal sealed class MainForm : Form
     private readonly Label _versionLabel = new();
     private readonly LinkLabel _repoLink = new();
     private readonly TextBox _handoffBox = new();
+    private readonly TableLayoutPanel _updatePanel = new();
+    private readonly Label _updateLabel = new();
+    private readonly ProgressBar _updateBar = new();
+    private readonly Button _updateCancelButton = new();
     private readonly bool _checkUpdates;
 
     private BridgeHost? _bridge;
     private bool _busy;
     private bool _closingForUpdate;
     private bool _updateCheckStarted;
+    private CancellationTokenSource? _updateCts;
     private volatile bool _closing;
 
     public MainForm(bool checkUpdates = true)
@@ -59,7 +65,7 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 6,
+            RowCount = 7,
             Padding = new Padding(14),
         };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -67,6 +73,7 @@ internal sealed class MainForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         // ---- title
@@ -138,23 +145,36 @@ internal sealed class MainForm : Form
         _writeBox.CheckedChanged += (_, _) => UpdateWriteOptions();
         AddFullWidthRow(fields, _writeBox);
 
-        var writeOptions = new FlowLayoutPanel
-        {
-            AutoSize = true,
-            WrapContents = false,
-            Margin = new Padding(3, 2, 3, 8),
-        };
+        _writeOptions.ColumnCount = 2;
+        _writeOptions.RowCount = 2;
+        _writeOptions.AutoSize = true;
+        _writeOptions.Dock = DockStyle.Fill;
+        _writeOptions.Visible = false;
+        _writeOptions.Margin = new Padding(3, 2, 3, 8);
+        _writeOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 22));
+        _writeOptions.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+
+        var guide = new BracePanel { Dock = DockStyle.Fill, Margin = new Padding(0) };
+        _writeOptions.Controls.Add(guide, 0, 0);
+        _writeOptions.SetRowSpan(guide, 2);
+
         _uploadBox.Text = "上传新文件";
         _uploadBox.AutoSize = true;
         _uploadBox.Checked = true;
         _uploadBox.Enabled = false;
+        _uploadBox.Margin = new Padding(3, 2, 3, 2);
+        _uploadBox.Anchor = AnchorStyles.Left;
+        _writeOptions.Controls.Add(_uploadBox, 1, 0);
+
         _mkdirBox.Text = "创建目录";
         _mkdirBox.AutoSize = true;
         _mkdirBox.Checked = true;
         _mkdirBox.Enabled = false;
-        writeOptions.Controls.Add(_uploadBox);
-        writeOptions.Controls.Add(_mkdirBox);
-        AddFullWidthRow(fields, writeOptions);
+        _mkdirBox.Margin = new Padding(3, 2, 3, 2);
+        _mkdirBox.Anchor = AnchorStyles.Left;
+        _writeOptions.Controls.Add(_mkdirBox, 1, 1);
+
+        AddFullWidthRow(fields, _writeOptions);
 
         _writeWarning.AutoSize = true;
         _writeWarning.MaximumSize = new Size(600, 0);
@@ -220,6 +240,37 @@ internal sealed class MainForm : Form
                            "Codex 不需要执行本程序。";
         root.Controls.Add(_handoffBox, 0, 4);
 
+        // ---- inline update progress (collapsed until a download starts)
+        _updatePanel.ColumnCount = 3;
+        _updatePanel.RowCount = 1;
+        _updatePanel.AutoSize = true;
+        _updatePanel.Dock = DockStyle.Fill;
+        _updatePanel.Visible = false;
+        _updatePanel.Margin = new Padding(0, 4, 0, 2);
+        _updatePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _updatePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
+        _updatePanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+
+        _updateLabel.AutoSize = true;
+        _updateLabel.Anchor = AnchorStyles.Left;
+        _updateLabel.Text = "";
+        _updatePanel.Controls.Add(_updateLabel, 0, 0);
+
+        _updateBar.Dock = DockStyle.Fill;
+        _updateBar.Minimum = 0;
+        _updateBar.Maximum = 100;
+        _updateBar.Style = ProgressBarStyle.Continuous;
+        _updateBar.Margin = new Padding(8, 3, 8, 3);
+        _updatePanel.Controls.Add(_updateBar, 1, 0);
+
+        _updateCancelButton.Text = "取消";
+        _updateCancelButton.AutoSize = true;
+        _updateCancelButton.Anchor = AnchorStyles.Right;
+        _updateCancelButton.Click += (_, _) => CancelUpdateDownload();
+        _updatePanel.Controls.Add(_updateCancelButton, 2, 0);
+
+        root.Controls.Add(_updatePanel, 0, 5);
+
         // ---- footer: repository link + version (both embedded at build time)
         _versionLabel.AutoSize = true;
         _versionLabel.Anchor = AnchorStyles.Right;
@@ -248,7 +299,7 @@ internal sealed class MainForm : Form
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         footer.Controls.Add(_repoLink, 0, 0);
         footer.Controls.Add(_versionLabel, 1, 0);
-        root.Controls.Add(footer, 0, 5);
+        root.Controls.Add(footer, 0, 6);
 
         Controls.Add(root);
         AcceptButton = _connectButton;
@@ -338,6 +389,7 @@ internal sealed class MainForm : Form
     private void UpdateWriteOptions()
     {
         var enabled = _writeBox.Checked;
+        _writeOptions.Visible = enabled;
         _uploadBox.Enabled = enabled;
         _mkdirBox.Enabled = enabled;
         _writeWarning.Visible = enabled;
@@ -615,22 +667,73 @@ internal sealed class MainForm : Form
         }
     }
 
-    private void DownloadAndApply(UpdateInfo info)
+    private async void DownloadAndApply(UpdateInfo info)
     {
-        using var progress = new UpdateProgressForm(info);
-        var result = progress.ShowDialog(this);
+        if (_updateCts is not null) return;
+        _updateCts = new CancellationTokenSource();
+        ShowUpdateProgress(info);
 
-        if (result != DialogResult.OK || string.IsNullOrWhiteSpace(progress.DownloadedPath))
+        try
         {
-            if (!string.IsNullOrWhiteSpace(progress.Error))
+            var progress = new Progress<double>(p => UpdateProgress(p));
+            var path = await UpdateService.DownloadAndVerifyAsync(info, progress, _updateCts.Token);
+            _updateLabel.Text = "下载完成，正在安装…";
+            _updateBar.Value = 100;
+            ApplyUpdate(path);
+        }
+        catch (OperationCanceledException)
+        {
+            if (!IsDisposed) HideUpdateProgress();
+        }
+        catch (Exception ex)
+        {
+            if (!IsDisposed)
             {
-                MessageBox.Show(this, "更新下载失败：\n\n" + progress.Error,
+                HideUpdateProgress();
+                MessageBox.Show(this, "更新下载失败：\n\n" + ex.Message,
                     "更新失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
-            return;
         }
+        finally
+        {
+            _updateCts?.Dispose();
+            _updateCts = null;
+        }
+    }
 
-        ApplyUpdate(progress.DownloadedPath);
+    private void ShowUpdateProgress(UpdateInfo info)
+    {
+        _updateLabel.Text = $"正在下载 SciBridge {info.Version}…";
+        _updateBar.Value = 0;
+        _updateCancelButton.Enabled = true;
+        _updatePanel.Visible = true;
+        _updatePanel.PerformLayout();
+        PerformLayout();
+    }
+
+    private void HideUpdateProgress()
+    {
+        _updatePanel.Visible = false;
+        _updateBar.Value = 0;
+        _updateLabel.Text = "";
+        PerformLayout();
+    }
+
+    private void UpdateProgress(double fraction)
+    {
+        if (IsDisposed) return;
+        _updateBar.Value = Math.Clamp((int)Math.Round(fraction * 100), 0, 100);
+        _updateLabel.Text = fraction >= 1
+            ? "下载完成，正在校验…"
+            : $"正在下载更新… {fraction:P0}";
+    }
+
+    private void CancelUpdateDownload()
+    {
+        if (_updateCts is null) return;
+        _updateCancelButton.Enabled = false;
+        _updateLabel.Text = "正在取消…";
+        _updateCts.Cancel();
     }
 
     private void ApplyUpdate(string stagedExe)
@@ -711,6 +814,8 @@ internal sealed class MainForm : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
+        try { _updateCts?.Cancel(); } catch { /* best effort */ }
+
         if (_closingForUpdate)
         {
             _closing = true;
